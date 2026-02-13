@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TODO清单</title>
+    {# 根据模式决定CSS路径 #}
+    {% if mode == 'SERVER' %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='material-icons/material-symbols-rounded.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    {% else %}
+    <link rel="stylesheet" href="static/material-icons/material-symbols-rounded.css">
+    <link rel="stylesheet" href="static/style.css">
+    {% endif %}
+</head>
+<body>
+    {# HTML主体部分保持不变... #}
+    <div class="workspace-controls-container">
+        <div class="workspace-controls">
+            <div class="workspace-group workspace-group-switcher">
+                <div class="workspace-switcher-container">
+                    <div id="workspace-switcher" class="workspace-switcher">
+                        <!-- 工作区标签将由JS动态生成 -->
+                    </div>
+                </div>
+                <button id="add-workspace-btn" class="ws-btn ws-btn-circle" title="添加新工作区"><span class="material-symbols-rounded">add</span></button>
+            </div>
+            <div class="workspace-group workspace-group-more">
+                <button id="more-ws-btn" class="ws-btn" title="更多"><span class="material-symbols-rounded">more_horiz</span></button>
+            </div>
+        </div>
+    </div>
+    <div id="app-container"></div>
+    <div class="add-buttons-container">
+        <button id="add-folder-btn" title="创建文件夹"><span class="material-symbols-rounded">folder_open</span></button>
+        <button id="add-photo-btn" title="添加图片"><span class="material-symbols-rounded">image</span></button>
+        <button id="add-emoji-btn" title="创建表情"><span class="material-symbols-rounded">mood</span></button>
+        <button id="add-shape-btn" title="创建新形状"><span class="material-symbols-rounded">widgets</span></button>
+        <button id="add-note-btn" title="创建新便签 (Alt+W)"><span class="material-symbols-rounded">sticky_note_2</span></button>
+        <button id="add-project-btn" title="创建新项目 (Alt+Q)"><span class="material-symbols-rounded">task_alt</span></button>
+    </div>
+    <input id="add-photo-input" type="file" accept="image/*" multiple style="display: none;">
+    <div id="stats-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close-btn">&times;</button>
+            <div class="stats-header">
+                <h2>工作区统计</h2>
+                <div class="stats-filters">
+                    <label for="stats-project-filter">筛选项目:</label>
+                    <!-- 确保下面这一行存在且 id 正确 -->
+                    <select id="stats-project-filter">
+                        <!-- 选项将由 JS 动态生成 -->
+                    </select>
+                </div>
+            </div>
+            <div class="stats-content-container">
+                <div class="stats-column">
+                    <h3>待办任务 (<span id="active-count">0</span>)</h3>
+                    <div id="active-stats-list" class="stats-list"></div>
+                </div>
+                <div class="stats-column">
+                    <h3>已完成任务 (<span id="completed-count">0</span>)</h3>
+                    <div id="completed-stats-list" class="stats-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <input type="file" id="import-file-input" accept=".json" style="display: none;">
+    <div id="custom-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h2 id="modal-title">标题</h2>
+            <p id="modal-message">这是一条消息。</p>
+            <input type="text" id="modal-input" placeholder="请输入...">
+            <div class="modal-buttons">
+                <button id="modal-cancel-btn" class="modal-btn modal-btn-secondary">取消</button>
+                <button id="modal-ok-btn" class="modal-btn modal-btn-primary">确认</button>
+            </div>
+        </div>
+    </div>
+    <div id="help-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close-btn">&times;</button>
+            <h2>快捷键帮助</h2>
+            <div class="help-content">
+                <div class="help-section">
+                    <h3>通用快捷键</h3>
+                    <ul>
+                        <li><kbd>Ctrl</kbd> + <kbd>滚轮</kbd><span>缩放界面</span></li>
+                        <li><kbd>Alt</kbd> + <kbd id="shortcut-project">Q</kbd><span>创建新项目</span></li>
+                        <li><kbd>Alt</kbd> + <kbd id="shortcut-note">W</kbd><span>创建新便签</span></li>               
+                        <li><kbd>Alt</kbd> + <kbd id="shortcut-toggle">E</kbd><span>隐藏/显示全部工作区按钮</span></li>
+                        <li><kbd>Alt</kbd> + <kbd id="shortcut-emoji">Z</kbd><span>创建表情</span></li>
+                        <li><kbd>Alt</kbd> + <kbd id="shortcut-shape">X</kbd><span>创建新形状</span></li>
+                        <li><kbd>Alt</kbd> + <kbd id="shortcut-stats">S</kbd><span>查看统计数据</span></li>
+                        <li><kbd>←</kbd> / <kbd>→</kbd><span>切换工作区</span></li>
+                        <li><kbd>Alt</kbd> + <kbd>1</kbd>...<kbd>9</kbd><span>切换到指定工作区</span></li>
+                        <li><kbd>Ctrl</kbd> + <kbd>Z</kbd><span>撤销上一步操作</span></li>
+                        <li><kbd>Ctrl</kbd> + <kbd>Y</kbd><span>取消撤回（重做）</span></li>
+                        <li><kbd>Ctrl</kbd> + <kbd>S</kbd><span>强制保存</span></li>
+                        <li><kbd>Delete</kbd> / <kbd>Backspace</kbd><span>删除选中的图片</span></li>
+                        <li><kbd>Ctrl</kbd> / <kbd>Shift</kbd> + <kbd>左键</kbd><span>多选窗口并一起拖动</span></li>
+                    </ul>
+                </div>
+                <div class="help-section">
+                    <h3>便签文本编辑</h3>
+                    <ul>
+                        <li><kbd>Ctrl</kbd> + <kbd>B</kbd><span>加粗</span></li>
+                        <li><kbd>Ctrl</kbd> + <kbd>U</kbd><span>下划线</span></li>
+                        <li><kbd>Ctrl</kbd> + <kbd>I</kbd><span>斜体 (浏览器默认)</span></li>
+                        <li><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>X</kbd><span>删除线 (浏览器默认)</span></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    <template id="note-template">
+        <div class="note-container">
+            <div class="resizer top-left" data-direction="top-left"></div>
+            <div class="resizer top-right" data-direction="top-right"></div>
+            <button class="delete-note-btn" title="删除便签">&times;</button>
+            <div class="resizer bottom-left" data-direction="bottom-left"></div>
+            <div class="resizer bottom-right" data-direction="bottom-right"></div>
+            <header class="note-header">
+                <input type="color" class="color-picker-input" style="display: none;">
+            </header>
+            <div class="note-content" contenteditable="true" spellcheck="false"></div>
+            <div class="note-toolbar">
+                <button class="toolbar-btn" data-command="bold" title="加粗 (Ctrl+B)"><b>B</b></button>
+                <button class="toolbar-btn" data-command="underline" title="下划线 (Ctrl+U)"><u>U</u></button>
+                <button class="toolbar-btn" data-command="strikeThrough" title="删除线"><s>S</s></button>
+                <div class="toolbar-color-picker" data-color-type="text">
+                    <input type="color" class="text-color-input" title="文本颜色">
+                </div>
+            </div>
+        </div>
+    </template>
+    <template id="project-template">
+        <div class="project-container">
+            <div class="resizer top-left" data-direction="top-left"></div>
+            <div class="resizer top-right" data-direction="top-right"></div>
+            <div class="resizer bottom-left" data-direction="bottom-left"></div>
+            <div class="resizer bottom-right" data-direction="bottom-right"></div>
+            <header class="project-header">
+                <h1 contenteditable="false">新项目</h1>
+                <div class="header-buttons">
+                    <button class="delete-project-btn" title="删除项目">&times;</button>
+                </div>
+            </header>
+            <div class="project-body">
+                <form class="add-form">
+                    <input type="text" class="todo-input" autocomplete="off" placeholder="">
+                    <button type="submit">+</button>
+                </form>
+                <div class="filters">
+                    <button class="filter-btn active" data-filter="all">全部</button>
+                    <button class="filter-btn" data-filter="active">待办</button>
+                    <button class="filter-btn" data-filter="completed">已完成</button>
+                    <button class="add-category-btn">+</button>
+                </div>
+                <ul class="todo-list"></ul>
+            </div>
+        </div>
+    </template>
+    <template id="shape-template">
+        <div class="shape-container">
+            <div class="resizer top-left" data-direction="top-left"></div>
+            <div class="resizer top-right" data-direction="top-right"></div>
+            <div class="resizer bottom-left" data-direction="bottom-left"></div>
+            <div class="resizer bottom-right" data-direction="bottom-right"></div>
+            <div class="shape-body"></div>
+            <div class="shape-text">
+                <span class="shape-text-inner" contenteditable="false"></span>
+            </div>
+        </div>
+    </template>
+    <template id="emoji-template">
+        <div class="emoji-container">
+            <div class="resizer top-left" data-direction="top-left"></div>
+            <div class="resizer top-right" data-direction="top-right"></div>
+            <div class="resizer bottom-left" data-direction="bottom-left"></div>
+            <div class="resizer bottom-right" data-direction="bottom-right"></div>
+            <div class="emoji-body"></div>
+        </div>
+    </template>
+    <template id="photo-template">
+        <div class="photo-container">
+            <div class="resizer top-left" data-direction="top-left"></div>
+            <div class="resizer top-right" data-direction="top-right"></div>
+            <div class="resizer bottom-left" data-direction="bottom-left"></div>
+            <div class="resizer bottom-right" data-direction="bottom-right"></div>
+            <img class="photo-body" alt="photo">
+        </div>
+    </template>
+    <template id="folder-template">
+        <div class="folder-container">
+            <div class="folder-icon">
+                <span class="material-symbols-rounded">folder_open</span>
+            </div>
+            <div class="folder-name" contenteditable="false"></div>
+            <div class="folder-badge">0</div>
+        </div>
+    </template>
+    <template id="folder-panel-template">
+        <div class="folder-panel">
+            <div class="folder-panel-header">
+                <div class="folder-panel-title">
+                    <span class="material-symbols-rounded" style="font-size: 20px; color: var(--folder-color, #5ac8fa);">folder_open</span>
+                    <span class="folder-panel-title-text"></span>
+                </div>
+                <button class="folder-panel-close">&times;</button>
+            </div>
+            <div class="folder-panel-body"></div>
+        </div>
+    </template>
+    <!-- +++ START: 新增搜索模态框 +++ -->
+    <div id="search-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close-btn">&times;</button>
+            <div class="search-header">
+                <h2>全局搜索 (当前工作区)</h2>
+                <input type="text" id="search-input" placeholder="输入关键词搜索任务...">
+            </div>
+            <div id="search-results" class="stats-content-container search-results-container">
+                <!-- 搜索结果将动态插入此处 -->
+            </div>
+        </div>
+    </div>
+    <!-- +++ END: 新增搜索模态框 +++ -->
+
+    <!-- +++ START: Emoji 选择器 +++ -->
+    <div id="emoji-picker-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close-btn">&times;</button>
+            <div class="emoji-picker-header">
+                <h2>选择表情</h2>
+                <input type="text" id="emoji-picker-search" placeholder="搜索表情...">
+            </div>
+            <div id="emoji-picker-tabs" class="emoji-picker-tabs"></div>
+            <div id="emoji-picker-grid" class="emoji-picker-grid"></div>
+            <div class="emoji-picker-footer">
+                <div id="emoji-picker-selected" class="emoji-picker-selected"></div>
+                <div class="emoji-picker-actions">
+                    <button id="emoji-picker-cancel" class="modal-btn modal-btn-secondary">取消</button>
+                    <button id="emoji-picker-confirm" class="modal-btn modal-btn-primary">确定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="photo-crop-modal" class="modal-overlay">
+        <div class="modal-content photo-crop-content">
+            <button class="modal-close-btn">&times;</button>
+            <h2>裁剪图片</h2>
+            <div class="photo-crop-canvas-wrap">
+                <canvas id="photo-crop-canvas"></canvas>
+                <canvas id="photo-crop-overlay"></canvas>
+            </div>
+            <div class="photo-crop-actions">
+                <button id="photo-crop-cancel" class="modal-btn modal-btn-secondary">取消</button>
+                <button id="photo-crop-confirm" class="modal-btn modal-btn-primary">确定</button>
+            </div>
+        </div>
+    </div>
+    <div id="settings-modal" class="modal-overlay">
+        <div class="modal-content settings-content">
+            <button class="modal-close-btn">&times;</button>
+            <h2>设置</h2>
+            <div class="settings-section">
+                <label class="settings-label">便签默认字体大小
+                    <input type="number" id="settings-note-font-size" min="12" max="40" step="1">
+                </label>
+            </div>
+            <div class="settings-section">
+                <label class="settings-label">项目默认字体大小
+                    <input type="number" id="settings-project-font-size" min="12" max="32" step="1">
+                </label>
+            </div>
+            <div class="settings-section">
+                <label class="settings-label">工作区背景颜色
+                    <input type="color" id="settings-bg-color">
+                </label>
+            </div>
+            <div class="settings-section">
+                <div class="settings-label">快捷键设置（Alt + 键）</div>
+                <div class="settings-shortcuts-grid">
+                    <label>创建项目 <input type="text" id="settings-shortcut-project" maxlength="1"></label>
+                    <label>创建便签 <input type="text" id="settings-shortcut-note" maxlength="1"></label>
+                    <label>创建形状 <input type="text" id="settings-shortcut-shape" maxlength="1"></label>
+                    <label>创建表情 <input type="text" id="settings-shortcut-emoji" maxlength="1"></label>
+                    <label>显示/隐藏按钮 <input type="text" id="settings-shortcut-toggle" maxlength="1"></label>
+                    <label>查看统计 <input type="text" id="settings-shortcut-stats" maxlength="1"></label>
+                </div>
+            </div>
+            <div class="settings-section settings-toggles">
+                <label><input type="checkbox" id="settings-shortcuts"> 启用快捷键</label>
+                <label><input type="checkbox" id="settings-shapes"> 启用形状功能</label>
+                <label><input type="checkbox" id="settings-emojis"> 启用表情功能</label>
+            </div>
+            <div class="settings-actions">
+                <button id="settings-reset" class="modal-btn modal-btn-secondary">还原为默认</button>
+                <button id="settings-save" class="modal-btn modal-btn-primary">保存</button>
+            </div>
+        </div>
+    </div>
+    <!-- +++ END: Emoji 选择器 +++ -->
+
+    <div id="image-resizer" style="display: none;">
+        <div class="resize-handle" data-handle="top-left"></div>
+        <div class="resize-handle" data-handle="top-middle"></div>
+        <div class="resize-handle" data-handle="top-right"></div>
+        <div class="resize-handle" data-handle="middle-left"></div>
+        <div class="resize-handle" data-handle="middle-right"></div>
+        <div class="resize-handle" data-handle="bottom-left"></div>
+        <div class="resize-handle" data-handle="bottom-middle"></div>
+        <div class="resize-handle" data-handle="bottom-right"></div>
+    </div>
+
+    <!-- +++ START: 添加 Toast 容器 +++ -->
+    <div id="toast-container"></div>
+    <!-- +++ END: 添加 Toast 容器 +++ -->
+
+    {# 注入全局变量 #}
+    <script>
+        const RUN_MODE = '{{ mode }}';
+        const APP_RUN_MODE = '{{ run_mode }}';
+        const INITIAL_DATA = {{ initial_data | tojson }};
+        {% if mode == 'SERVER' %}
+        const API_SAVE_URL = "{{ url_for('save_data') }}";
+        const API_LOG_URL = "{{ url_for('log_client_event') }}";
+        {% else %}
+        const API_LOG_URL = "";
+        {% endif %}
+    </script>
+    
+    {# 根据模式决定JS路径 #}
+    {% if mode == 'SERVER' %}
+    <script src="{{ url_for('static', filename='vendor/docx.umd.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+    {% else %}
+    <script src="static/vendor/docx.umd.js" defer></script>
+    <script src="static/script.js" defer></script>
+    {% endif %}
+
+
+</body>
+</html>
