@@ -4383,6 +4383,8 @@ function createNotePane(note) {
         if (pastedHtml) {
             const tempDiv = document.createElement('div');
             tempDiv.innerHTML = pastedHtml;
+            
+            // 1. 清理样式属性
             const allElements = tempDiv.querySelectorAll('*');
             let hasInlineNoWrap = false;
             allElements.forEach(el => {
@@ -4399,7 +4401,33 @@ function createNotePane(note) {
                 el.style.maxWidth = '';
                 el.removeAttribute('bgcolor');
             });
-            const sanitizedHtml = tempDiv.innerHTML;
+            
+            // 2. 将块级元素转换为 span，避免产生额外换行
+            const blockTags = ['div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'td', 'th'];
+            blockTags.forEach(tag => {
+                const elements = tempDiv.getElementsByTagName(tag);
+                while (elements.length > 0) {
+                    const el = elements[0];
+                    const span = document.createElement('span');
+                    // 保留内部内容和行内样式
+                    span.innerHTML = el.innerHTML;
+                    span.style.cssText = el.style.cssText;
+                    // 保留 class 属性（如果有）
+                    if (el.className) span.className = el.className;
+                    // 替换元素
+                    el.parentNode.replaceChild(span, el);
+                }
+            });
+            
+            // 3. 处理 <br> 标签，移除连续的多余 <br>
+            let sanitizedHtml = tempDiv.innerHTML;
+            sanitizedHtml = sanitizedHtml.replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>');
+            
+            // 4. 清理首尾空白
+            const finalDiv = document.createElement('div');
+            finalDiv.innerHTML = sanitizedHtml;
+            sanitizedHtml = finalDiv.innerHTML.trim();
+            
             document.execCommand('insertHTML', false, sanitizedHtml);
             logUiEvent('note_paste', {
                 hasHtml: true,
