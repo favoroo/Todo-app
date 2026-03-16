@@ -3882,6 +3882,49 @@ function renderFolderPanelItems(body, folder) {
             itemEl.classList.add('active');
         });
 
+        // 右键菜单 - 支持拖出到工作区
+        itemEl.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            closeAllDropdowns();
+            
+            const menu = document.createElement('div');
+            menu.className = 'custom-dropdown-menu';
+            menu.innerHTML = `
+                <div class="dropdown-option" data-action="dragout">拖出到工作区</div>
+                <div class="dropdown-divider"></div>
+                <div class="dropdown-option danger" data-action="delete">从文件夹移除</div>
+            `;
+            
+            // 定位菜单
+            const rect = itemEl.getBoundingClientRect();
+            menu.style.position = 'fixed';
+            menu.style.left = `${e.clientX}px`;
+            menu.style.top = `${e.clientY}px`;
+            menu.style.zIndex = '10000';
+            document.body.appendChild(menu);
+            
+            // 处理菜单点击
+            menu.addEventListener('click', (me) => {
+                const action = me.target.dataset.action;
+                if (action === 'dragout') {
+                    closeAllDropdowns();
+                    dragOutFolderItem(folder, index, item, data);
+                } else if (action === 'delete') {
+                    closeAllDropdowns();
+                    removeItemFromFolder(folder, index);
+                }
+            });
+            
+            // 点击外部关闭菜单
+            setTimeout(() => {
+                document.addEventListener('click', function closeMenu() {
+                    closeAllDropdowns();
+                    document.removeEventListener('click', closeMenu);
+                }, { once: true });
+            }, 0);
+        });
+
         // 双击展开详情（不移出）
         itemEl.addEventListener('dblclick', (e) => {
             if (e.target === removeBtn) return;
@@ -3969,6 +4012,76 @@ function removeItemFromFolder(folder, itemIndex) {
     if (openFolderPanel && openFolderPanel.folder.id === folder.id) {
         const body = openFolderPanel.panel.querySelector('.folder-panel-body');
         renderFolderPanelItems(body, folder);
+    }
+}
+
+function dragOutFolderItem(folder, itemIndex, item, data) {
+    recordState();
+    const currentWorkspace = workspaces[currentWorkspaceIndex];
+    if (!currentWorkspace) return;
+    
+    // 从文件夹中移除
+    if (data) {
+        delete data.folderId;
+    }
+    folder.items.splice(itemIndex, 1);
+    updateFolderBadge(folder.id);
+    
+    // 计算放置位置 - 在文件夹面板旁边
+    let dropX, dropY;
+    if (openFolderPanel) {
+        const panelRect = openFolderPanel.panel.getBoundingClientRect();
+        dropX = (panelRect.right + 20) / currentZoom;
+        dropY = (panelRect.top + 50) / currentZoom;
+    } else {
+        // 如果没有打开的面板，放在屏幕中央
+        dropX = (window.innerWidth / 2) / currentZoom - 100;
+        dropY = (window.innerHeight / 2) / currentZoom - 50;
+    }
+    
+    // 根据类型设置偏移量
+    let offsetX = 100;
+    let offsetY = 50;
+    if (item.type === 'photo' && data.size) {
+        const width = parseInt(data.size.width) || 240;
+        const height = parseInt(data.size.height) || 180;
+        offsetX = width / 2;
+        offsetY = height / 2;
+    } else if (item.type === 'note') {
+        offsetX = 125;
+        offsetY = 75;
+    } else if (item.type === 'project') {
+        offsetX = 150;
+        offsetY = 100;
+    }
+    
+    data.position = { 
+        left: `${dropX - offsetX}px`, 
+        top: `${dropY - offsetY}px` 
+    };
+    
+    debouncedSave();
+    
+    // 刷新面板
+    if (openFolderPanel && openFolderPanel.folder.id === folder.id) {
+        const body = openFolderPanel.panel.querySelector('.folder-panel-body');
+        renderFolderPanelItems(body, folder);
+    }
+    
+    // 将元素渲染到工作区
+    let newEl = null;
+    if (item.type === 'note') newEl = createNotePane(data);
+    else if (item.type === 'project') newEl = createProjectPane(data, currentWorkspace);
+    else if (item.type === 'photo') newEl = createPhotoPane(data);
+    
+    if (newEl) {
+        if (data.zIndex && data.zIndex >= highestZIndex) {
+            highestZIndex = data.zIndex + 1;
+        }
+        // 添加动画效果
+        newEl.classList.add('newly-added');
+        setTimeout(() => newEl.classList.remove('newly-added'), 400);
+        checkEmptyState(currentWorkspace);
     }
 }
 
