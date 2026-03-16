@@ -5379,13 +5379,34 @@ function createProjectPane(project, workspace) {
             const todo = project.todos.find(t => t.id == todoId); if (!todo) return;
 
             if (isSubtask) {
-                const subtaskId = item.dataset.id;
+                const subtaskId = item.dataset.subId;
                 const subtask = todo.subtasks.find(st => st.id == subtaskId); if (!subtask) return;
                 
-                if (e.target.closest('.toggle')) { recordState(); subtask.completed = !subtask.completed; debouncedSave(); renderTodos(); } 
+                if (e.target.closest('.toggle')) { 
+                    recordState(); 
+                    subtask.completed = !subtask.completed; 
+                    // 直接更新 DOM 而不是重新渲染 - 只需要切换 completed 类，CSS 会处理勾选图标
+                    item.classList.toggle('completed', subtask.completed);
+                    debouncedSave(); 
+                } 
                 else if (e.target.closest('.delete-btn')) { recordState(); todo.subtasks = todo.subtasks.filter(st => st.id != subtaskId); debouncedSave(); renderTodos(); }
             } else {
-                if (e.target.closest('.toggle')) { recordState(); todo.completed = !todo.completed; debouncedSave(); renderTodos(); return; }
+                if (e.target.closest('.toggle')) { 
+                    recordState(); 
+                    todo.completed = !todo.completed; 
+                    // 直接更新 DOM 而不是重新渲染 - 只需要切换 completed 类，CSS 会处理勾选图标
+                    item.classList.toggle('completed', todo.completed);
+                    // 更新子任务的完成状态样式
+                    item.querySelectorAll('.sub-task-item').forEach(subEl => {
+                        const subId = subEl.dataset.subId;
+                        const subtask = todo.subtasks?.find(st => st.id == subId);
+                        if (subtask) {
+                            subEl.classList.toggle('completed', subtask.completed);
+                        }
+                    });
+                    debouncedSave(); 
+                    return; 
+                }
                 if (e.target.closest('.delete-btn')) { recordState(); project.todos = project.todos.filter(t => t.id != todoId); debouncedSave(); renderTodos(); return; }
             }
         });
@@ -5676,7 +5697,7 @@ function createProjectPane(project, workspace) {
         // 优先查找子任务上的指示器，然后是主任务
         let dropTargetEl = document.querySelector('.sub-task-item.drop-indicator-top, .sub-task-item.drop-indicator-bottom');
         if (!dropTargetEl) {
-            dropTargetEl = document.querySelector('.todo-item.drop-indicator-top, .todo-item.drop-indicator-bottom, .drop-zone-parent, .todo-item-placeholder');
+            dropTargetEl = document.querySelector('.todo-item.drop-indicator-top, .todo-item.drop-indicator-bottom, .drop-zone-parent, .become-subtask, .become-main-task-top, .become-main-task-bottom, .todo-item-placeholder');
         }
 
         if (dropTargetEl) {
@@ -5684,31 +5705,22 @@ function createProjectPane(project, workspace) {
                 // --- 拖动的是子任务 ---
                 if (dropTargetEl.classList.contains('sub-task-item')) {
                     // 放置到另一个子任务位置（排序）
-                    const targetParentTodo = project.todos.find(t => t.id == dropTargetEl.dataset.id);
+                    const targetParentTodo = project.todos.find(t => t.id == draggedTaskInfo.targetParentTodoId);
                     if (targetParentTodo && targetParentTodo.subtasks) {
-                        // 使用 dragover 中保存的目标索引（基于完整数组的索引）
                         let targetSubtaskIndex = draggedTaskInfo.targetSubtaskIndex;
                         
                         if (targetSubtaskIndex !== undefined && targetSubtaskIndex !== -1) {
-                            // 检查源和目标是否在同一个父任务中
                             const sourceParentTodo = project.todos.find(t => t.id == sourceParentTodoId);
                             const isSameParent = sourceParentTodo === targetParentTodo;
                             
-                            // 计算插入位置
                             let insertIndex;
                             if (dropTargetEl.classList.contains('drop-indicator-top')) {
-                                // 插入到目标子任务之前
                                 insertIndex = targetSubtaskIndex;
-                                // 如果源在目标之前，且是同一个父任务，需要+1补偿
-                                // 因为源子任务被移除后，目标前移了一位
                                 if (isSameParent && sourceIndex < targetSubtaskIndex) {
                                     insertIndex++;
                                 }
                             } else {
-                                // 插入到目标子任务之后
                                 insertIndex = targetSubtaskIndex + 1;
-                                // 如果源在目标之前，且是同一个父任务，需要-1补偿
-                                // 因为源子任务被移除后，目标前移了一位
                                 if (isSameParent && sourceIndex < targetSubtaskIndex) {
                                     insertIndex--;
                                 }
@@ -5718,8 +5730,63 @@ function createProjectPane(project, workspace) {
                             operationPerformed = true;
                         }
                     }
+                } else if (dropTargetEl.classList.contains('become-subtask')) {
+                    // 变成其他主任务的子任务
+                    const targetParentTodo = project.todos.find(t => t.id == dropTargetEl.dataset.id);
+                    if (targetParentTodo) {
+                        targetParentTodo.subtasks = targetParentTodo.subtasks || [];
+                        targetParentTodo.subtasks.push(draggedItemData);
+                        operationPerformed = true;
+                    }
+                } else if (dropTargetEl.classList.contains('become-main-task-top') || dropTargetEl.classList.contains('become-main-task-bottom')) {
+                    // 子任务变成主任务
+                    const newTask = {
+                        id: `task_${Date.now()}`,
+                        text: draggedItemData.text,
+                        completed: draggedItemData.completed,
+                        isImportant: false,
+                        isPriority: false,
+                        categoryId: null,
+                        subtasks: [],
+                        textBold: false,
+                        textColor: null,
+                        planTime: null,
+                        remindTime: null,
+                        remindAt: null,
+                        remindNotified: false
+                    };
+                    
+                    const targetId = dropTargetEl.dataset.id;
+                    const targetIndex = project.todos.findIndex(t => t.id == targetId);
+                    if (targetIndex !== -1) {
+                        const insertIndex = dropTargetEl.classList.contains('become-main-task-top') ? targetIndex : targetIndex + 1;
+                        project.todos.splice(insertIndex, 0, newTask);
+                        operationPerformed = true;
+                    } else {
+                        project.todos.push(newTask);
+                        operationPerformed = true;
+                    }
+                } else if (dropTargetEl.classList.contains('todo-item-placeholder')) {
+                    // 空列表时变成主任务
+                    const newTask = {
+                        id: `task_${Date.now()}`,
+                        text: draggedItemData.text,
+                        completed: draggedItemData.completed,
+                        isImportant: false,
+                        isPriority: false,
+                        categoryId: null,
+                        subtasks: [],
+                        textBold: false,
+                        textColor: null,
+                        planTime: null,
+                        remindTime: null,
+                        remindAt: null,
+                        remindNotified: false
+                    };
+                    project.todos.push(newTask);
+                    operationPerformed = true;
                 } else if (dropTargetEl.classList.contains('todo-item')) {
-                    // 放置到主任务上（变为该主任务的子任务）
+                    // 兼容旧逻辑：放置到主任务上
                     const targetParentTodo = project.todos.find(t => t.id == dropTargetEl.dataset.id);
                     if (targetParentTodo) {
                         targetParentTodo.subtasks = targetParentTodo.subtasks || [];
@@ -5729,8 +5796,8 @@ function createProjectPane(project, workspace) {
                 }
             } else {
                 // --- 拖动的是主任务 ---
-                if (dropTargetEl.classList.contains('drop-zone-parent')) {
-                    // 放置为子任务
+                if (dropTargetEl.classList.contains('drop-zone-parent') || dropTargetEl.classList.contains('become-subtask')) {
+                    // 主任务变成子任务
                     const targetParentTodo = project.todos.find(t => t.id == dropTargetEl.dataset.id);
                     if (targetParentTodo && targetParentTodo.id != draggedItemId) {
                         targetParentTodo.subtasks = targetParentTodo.subtasks || [];
@@ -5756,6 +5823,25 @@ function createProjectPane(project, workspace) {
                     operationPerformed = true;
                 }
             }
+        } else if (type === 'subtask') {
+            // 子任务拖动到空白区域，变成主任务
+            const newTask = {
+                id: `task_${Date.now()}`,
+                text: draggedItemData.text,
+                completed: draggedItemData.completed,
+                isImportant: false,
+                isPriority: false,
+                categoryId: null,
+                subtasks: [],
+                textBold: false,
+                textColor: null,
+                planTime: null,
+                remindTime: null,
+                remindAt: null,
+                remindNotified: false
+            };
+            project.todos.push(newTask);
+            operationPerformed = true;
         } else if (type === 'task') {
             // 如果没有明确的放置目标，主任务添加到末尾
             project.todos.push(draggedItemData);
@@ -5844,22 +5930,75 @@ function createProjectPane(project, workspace) {
                     }
                 }
             } else if (draggedTaskInfo.type === 'subtask' && hoverTargetItem && hoverTargetItem.dataset.id !== draggedTaskInfo.sourceParentTodoId) {
-                // 场景1b: 拖动子任务，悬停在主任务上（可以变为该主任务的子任务）
-                currentTarget = hoverTargetItem;
+                // 场景B: 拖动子任务到其他主任务上
                 const rect = hoverTargetItem.getBoundingClientRect();
-                currentIndicator = (e.clientY - rect.top < rect.height / 2) ? 'top' : 'bottom';
-            } else if (hoverTargetItem && hoverTargetItem.dataset.id !== draggedItemId) {
+                const relativeY = e.clientY - rect.top;
+                const threshold = 15;
+                
+                // 检查是否在主任务的顶部或底部边缘区域
+                if (relativeY < threshold) {
+                    // 靠近顶部 → 变成主任务（插入到该任务之前）
+                    currentTarget = hoverTargetItem;
+                    currentIndicator = 'become-main-task-top';
+                } else if (relativeY > rect.height - threshold) {
+                    // 靠近底部 → 变成主任务（插入到该任务之后）
+                    currentTarget = hoverTargetItem;
+                    currentIndicator = 'become-main-task-bottom';
+                } else {
+                    // 中间区域 → 变成该主任务的子任务
+                    currentTarget = hoverTargetItem;
+                    currentIndicator = 'become-subtask';
+                }
+            } else if (draggedTaskInfo.type === 'subtask' && hoverTargetItem && hoverTargetItem.dataset.id === draggedTaskInfo.sourceParentTodoId) {
+                // 场景B2: 子任务拖动到自己的父任务上 → 检查是否拖到边缘变成主任务
+                const rect = hoverTargetItem.getBoundingClientRect();
+                const relativeY = e.clientY - rect.top;
+                const threshold = 15;
+                
+                if (relativeY < threshold) {
+                    currentTarget = hoverTargetItem;
+                    currentIndicator = 'become-main-task-top';
+                } else if (relativeY > rect.height - threshold) {
+                    currentTarget = hoverTargetItem;
+                    currentIndicator = 'become-main-task-bottom';
+                }
+                // 否则不设置任何指示器（不允许在同一个父任务内变成子任务）
+            } else if (draggedTaskInfo.type === 'subtask' && !hoverTargetItem && !hoverTargetSubItem) {
+                // 场景C: 子任务拖到空白区域 → 变成主任务
+                const draggableElements = [...todoList.querySelectorAll('.todo-item:not(.dragging-task)')];
+                if (draggableElements.length > 0) {
+                    const firstElRect = draggableElements[0].getBoundingClientRect();
+                    const lastElRect = draggableElements[draggableElements.length - 1].getBoundingClientRect();
+                    if (e.clientY < firstElRect.top) {
+                        currentTarget = draggableElements[0];
+                        currentIndicator = 'become-main-task-top';
+                    } else if (e.clientY > lastElRect.bottom) {
+                        currentTarget = draggableElements[draggableElements.length - 1];
+                        currentIndicator = 'become-main-task-bottom';
+                    }
+                } else {
+                    let placeholder = todoList.querySelector('.todo-item-placeholder');
+                    if (!placeholder) {
+                        placeholder = document.createElement('div');
+                        placeholder.className = 'todo-item-placeholder';
+                        todoList.appendChild(placeholder);
+                    }
+                    currentTarget = placeholder;
+                    currentIndicator = 'become-main-task-bottom';
+                }
+            } else if (hoverTargetItem && hoverTargetItem.dataset.id !== draggedItemId && draggedTaskInfo.type === 'task') {
                 // 场景2: 拖动主任务，进行排序或变为子任务
                 currentTarget = hoverTargetItem;
-                const isHoverOnMainPart = e.target.closest('.todo-item-main');
-                const canBecomeSubtask = draggedTaskInfo.type === 'task';
+                const rect = hoverTargetItem.getBoundingClientRect();
+                const relativeY = e.clientY - rect.top;
+                const threshold = 20;
                 
-                // 仅当拖动主任务并悬停在另一个主任务的主要区域时，才显示“变为子任务”的高亮
-                if (isHoverOnMainPart && canBecomeSubtask) {
-                    currentIndicator = 'parent';
-                } else { // 否则，显示排序指示线
-                    const rect = hoverTargetItem.getBoundingClientRect();
-                    currentIndicator = (e.clientY - rect.top < rect.height / 2) ? 'top' : 'bottom';
+                if (relativeY < threshold) {
+                    currentIndicator = 'top';
+                } else if (relativeY > rect.height - threshold) {
+                    currentIndicator = 'bottom';
+                } else {
+                    currentIndicator = 'become-subtask';
                 }
             } else if (!hoverTargetItem && !hoverTargetSubItem) {
                 // 场景3: 拖动到列表的空白区域 (顶部或底部)
@@ -5874,8 +6013,8 @@ function createProjectPane(project, workspace) {
                         currentTarget = draggableElements[draggableElements.length - 1];
                         currentIndicator = 'bottom';
                     }
-                } else if (draggedTaskInfo.type === 'task') {
-                    // 如果列表为空，则显示一个占位符作为放置目标
+                } else if (draggedTaskInfo.type === 'task' || draggedTaskInfo.type === 'subtask') {
+                    // 如果列表为空，则显示一个占位符作为放置目标（支持主任务和子任务）
                     let placeholder = todoList.querySelector('.todo-item-placeholder');
                     if (!placeholder) {
                         placeholder = document.createElement('div');
@@ -5894,8 +6033,8 @@ function createProjectPane(project, workspace) {
             lastDragOverInfo = { target: currentTarget, indicator: currentIndicator };
 
             // 清理所有旧的指示器
-            document.querySelectorAll('.drop-indicator-top, .drop-indicator-bottom, .drop-zone-parent').forEach(el => {
-                el.classList.remove('drop-indicator-top', 'drop-indicator-bottom', 'drop-zone-parent');
+            document.querySelectorAll('.drop-indicator-top, .drop-indicator-bottom, .drop-zone-parent, .become-subtask, .become-main-task-top, .become-main-task-bottom').forEach(el => {
+                el.classList.remove('drop-indicator-top', 'drop-indicator-bottom', 'drop-zone-parent', 'become-subtask', 'become-main-task-top', 'become-main-task-bottom');
             });
             todoList.querySelector('.todo-item-placeholder')?.remove();
 
@@ -5903,7 +6042,9 @@ function createProjectPane(project, workspace) {
             if (currentTarget) {
                 if (currentIndicator === 'top') currentTarget.classList.add('drop-indicator-top');
                 else if (currentIndicator === 'bottom') currentTarget.classList.add('drop-indicator-bottom');
-                else if (currentIndicator === 'parent') currentTarget.classList.add('drop-zone-parent');
+                else if (currentIndicator === 'become-subtask') currentTarget.classList.add('become-subtask');
+                else if (currentIndicator === 'become-main-task-top') currentTarget.classList.add('become-main-task-top');
+                else if (currentIndicator === 'become-main-task-bottom') currentTarget.classList.add('become-main-task-bottom');
             }
         });
         
@@ -6263,8 +6404,8 @@ function cleanupDragDropState() {
     document.body.classList.remove('body-dragging');
     const draggedEl = document.querySelector('.dragging-task');
     if(draggedEl) draggedEl.classList.remove('dragging-task');
-    document.querySelectorAll('.drop-zone-project, .drop-zone-category, .drag-over, .drag-over-cat, .drop-zone-parent, .drop-indicator-top, .drop-indicator-bottom').forEach(el => 
-        el.classList.remove('drop-zone-project', 'drop-zone-category', 'drag-over', 'drag-over-cat', 'drop-zone-parent', 'drop-indicator-top', 'drop-indicator-bottom')
+    document.querySelectorAll('.drop-zone-project, .drop-zone-category, .drag-over, .drag-over-cat, .drop-zone-parent, .drop-indicator-top, .drop-indicator-bottom, .become-subtask, .become-main-task-top, .become-main-task-bottom').forEach(el => 
+        el.classList.remove('drop-zone-project', 'drop-zone-category', 'drag-over', 'drag-over-cat', 'drop-zone-parent', 'drop-indicator-top', 'drop-indicator-bottom', 'become-subtask', 'become-main-task-top', 'become-main-task-bottom')
     );
     // 清理 draggedTaskInfo 中的临时数据
     if (draggedTaskInfo) {

@@ -1234,10 +1234,21 @@ select:focus-visible,
 }
 
 /* Drop zone highlight for turning a task into a sub-task */
-.todo-item.drop-zone-parent {
+.todo-item.drop-zone-parent,
+.todo-item.become-subtask {
     background-color: rgba(var(--accent-color-rgb), 0.1);
     box-shadow: 0 0 0 2px rgba(var(--accent-color-rgb), 0.5) inset;
     border-radius: 8px;
+}
+
+/* Drop zone highlight for turning a subtask into a main task */
+.todo-item.become-main-task-top {
+    border-top: 3px solid var(--accent-color) !important;
+    margin-top: -3px;
+}
+.todo-item.become-main-task-bottom {
+    border-bottom: 3px solid var(--accent-color) !important;
+    margin-bottom: -3px;
 }
 
 /* Drop zone highlight for dropping tasks across projects */
