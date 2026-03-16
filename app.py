@@ -25,7 +25,7 @@ STATIC_EXPORT_IP = ""
 # 服务器配置 (仅在 SERVER 模式下有效)
 PORT = 5009
 # 路由前缀根据模式动态设置
-ROUTE_PREFIX = "/Todo" if RUN_MODE == 'SERVER' else ""
+ROUTE_PREFIX = ""
 # ============================================
 
 # --- 基础配置 ---

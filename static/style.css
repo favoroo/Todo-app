@@ -1877,6 +1877,31 @@ html[data-theme="light"] { scrollbar-color: rgba(0, 0, 0, 0.3) transparent; }
     color: #fff;
 }
 
+/* emoji 选择器中的默认文件夹图标选项 */
+.emoji-picker-item.emoji-picker-default-icon {
+    background: var(--control-btn-bg);
+    border: 2px dashed var(--border-color);
+}
+
+.emoji-picker-item.emoji-picker-default-icon .material-symbols-rounded {
+    font-size: 24px;
+    color: var(--folder-color, #5ac8fa);
+}
+
+.emoji-picker-item.emoji-picker-default-icon:hover {
+    background: var(--control-btn-hover);
+    border-color: var(--accent-color);
+}
+
+.emoji-picker-item.emoji-picker-default-icon.selected {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
+.emoji-picker-item.emoji-picker-default-icon.selected .material-symbols-rounded {
+    color: #fff;
+}
+
 .emoji-picker-footer {
     display: flex;
     align-items: center;
@@ -2159,6 +2184,21 @@ html[data-theme="light"] { scrollbar-color: rgba(0, 0, 0, 0.3) transparent; }
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
+/* 文件夹 emoji 图标样式 */
+.folder-emoji-icon {
+    font-size: 32px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+/* 当有 emoji 图标时隐藏默认图标 */
+.folder-icon:has(.folder-emoji-icon:not(:empty)) .folder-default-icon {
+    display: none;
+}
+
 .folder-name {
     margin-top: 4px;
     font-size: 0.75rem;
@@ -2246,6 +2286,18 @@ html[data-theme="light"] { scrollbar-color: rgba(0, 0, 0, 0.3) transparent; }
 
 .folder-panel-title-text {
     /* 保持文字样式 */
+}
+
+/* 文件夹面板 emoji 图标 */
+.folder-panel-emoji-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 当有 emoji 图标时隐藏默认图标 */
+.folder-panel-title:has(.folder-panel-emoji-icon:not(:empty)) .folder-panel-default-icon {
+    display: none;
 }
 
 .folder-panel-close {

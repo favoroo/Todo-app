@@ -194,7 +194,10 @@
     <template id="folder-template">
         <div class="folder-container">
             <div class="folder-icon">
-                <span class="material-symbols-rounded">folder_open</span>
+                <!-- 默认图标，如果没有自定义 emoji -->
+                <span class="material-symbols-rounded folder-default-icon">folder_open</span>
+                <!-- 自定义 emoji 图标 -->
+                <span class="folder-emoji-icon" style="display: none;"></span>
             </div>
             <div class="folder-name" contenteditable="false"></div>
             <div class="folder-badge">0</div>
@@ -204,7 +207,10 @@
         <div class="folder-panel">
             <div class="folder-panel-header">
                 <div class="folder-panel-title">
-                    <span class="material-symbols-rounded" style="font-size: 20px; color: var(--folder-color, #5ac8fa);">folder_open</span>
+                    <!-- 默认图标 -->
+                    <span class="material-symbols-rounded folder-panel-default-icon" style="font-size: 20px; color: var(--folder-color, #5ac8fa);">folder_open</span>
+                    <!-- 自定义 emoji 图标 -->
+                    <span class="folder-panel-emoji-icon" style="font-size: 20px; display: none;"></span>
                     <span class="folder-panel-title-text"></span>
                 </div>
                 <button class="folder-panel-close">&times;</button>

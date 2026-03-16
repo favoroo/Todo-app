@@ -1336,7 +1336,20 @@ const renderEmojiPickerGrid = () => {
     const list = getEmojiListByTab(emojiPickerState.tab);
     const q = emojiPickerState.query.trim();
     const filtered = q ? list.filter(e => e.includes(q)) : list;
-    emojiPickerGrid.innerHTML = filtered.map(e => {
+    
+    // 如果是文件夹图标选择模式，添加默认图标选项
+    const isFolderIconMode = emojiPickerState.mode === 'edit' && emojiPickerState.target && emojiPickerState.target.items !== undefined;
+    let defaultIconHTML = '';
+    if (isFolderIconMode && !q) {
+        const isDefaultSelected = emojiPickerState.selected.length === 0;
+        defaultIconHTML = `
+            <div class="emoji-picker-item emoji-picker-default-icon ${isDefaultSelected ? 'selected' : ''}" data-emoji="" title="默认文件夹图标">
+                <span class="material-symbols-rounded">folder_open</span>
+            </div>
+        `;
+    }
+    
+    emojiPickerGrid.innerHTML = defaultIconHTML + filtered.map(e => {
         const selected = emojiPickerState.selected.includes(e) ? 'selected' : '';
         return `<div class="emoji-picker-item ${selected}" data-emoji="${e}">${e}</div>`;
     }).join('');
@@ -3338,6 +3351,8 @@ function createFolderPane(folder) {
     const node = folderTemplate.content.cloneNode(true);
     const container = node.querySelector('.folder-container');
     const folderIcon = node.querySelector('.folder-icon');
+    const folderDefaultIcon = node.querySelector('.folder-default-icon');
+    const folderEmojiIcon = node.querySelector('.folder-emoji-icon');
     const folderName = node.querySelector('.folder-name');
     const folderBadge = node.querySelector('.folder-badge');
     const appContainer = document.getElementById('app-container');
@@ -3353,6 +3368,19 @@ function createFolderPane(folder) {
     folderName.textContent = folder.name;
     folderBadge.textContent = folder.items.length;
     folderBadge.dataset.count = folder.items.length;
+
+    // 更新文件夹图标显示
+    const updateFolderIcon = () => {
+        if (folder.icon) {
+            folderEmojiIcon.textContent = folder.icon;
+            folderEmojiIcon.style.display = 'flex';
+            folderDefaultIcon.style.display = 'none';
+        } else {
+            folderEmojiIcon.style.display = 'none';
+            folderDefaultIcon.style.display = 'flex';
+        }
+    };
+    updateFolderIcon();
 
     // 双击打开/关闭文件夹面板
     container.addEventListener('dblclick', (e) => {
@@ -3382,6 +3410,7 @@ function createFolderPane(folder) {
         menu.innerHTML = `
             <div class="dropdown-option" data-action="open">打开文件夹</div>
             <div class="dropdown-option" data-action="rename">重命名</div>
+            <div class="dropdown-option" data-action="icon">修改图标</div>
             <div class="dropdown-option" data-action="color">更改颜色</div>
             ${groupMenuHTML}
             <div class="dropdown-divider"></div>
@@ -3396,6 +3425,9 @@ function createFolderPane(folder) {
             } else if (action === 'rename') {
                 closeAllDropdowns();
                 enterFolderNameEdit();
+            } else if (action === 'icon') {
+                closeAllDropdowns();
+                openFolderIconPicker();
             } else if (action === 'color') {
                 closeAllDropdowns();
                 openFolderColorPicker();
@@ -3457,6 +3489,27 @@ function createFolderPane(folder) {
             tempColorInput.remove();
         }, { once: true });
         tempColorInput.click();
+    };
+
+    const openFolderIconPicker = () => {
+        // 预选中当前的 emoji（如果有）
+        if (folder.icon) {
+            emojiPickerState.selected = [folder.icon];
+        } else {
+            emojiPickerState.selected = [];
+        }
+        
+        openEmojiPicker({
+            mode: 'edit',
+            target: folder,
+            onSelect: (emoji) => {
+                recordState();
+                // 如果选中了 emoji，使用第一个；如果没有选中，清空图标
+                folder.icon = emoji || null;
+                updateFolderIcon();
+                debouncedSave();
+            }
+        });
     };
 
     const deleteFolderAction = () => {
@@ -3646,12 +3699,21 @@ function openFolderPanelUI(folder, folderContainer) {
     const node = panelTemplate.content.cloneNode(true);
     const panel = node.querySelector('.folder-panel');
     const titleText = node.querySelector('.folder-panel-title-text');
+    const defaultIcon = node.querySelector('.folder-panel-default-icon');
+    const emojiIcon = node.querySelector('.folder-panel-emoji-icon');
     const closeBtn = node.querySelector('.folder-panel-close');
     const body = node.querySelector('.folder-panel-body');
 
     titleText.textContent = folder.name;
     panel.style.setProperty('--folder-color', folder.color);
     panel.dataset.folderId = folder.id;
+
+    // 设置文件夹图标
+    if (folder.icon) {
+        emojiIcon.textContent = folder.icon;
+        emojiIcon.style.display = 'inline';
+        defaultIcon.style.display = 'none';
+    }
 
     // 定位面板
     const containerRect = folderContainer.getBoundingClientRect();
@@ -4514,7 +4576,8 @@ function createProjectPane(project, workspace) {
         parentTodo.subtasks.forEach(subtask => {
             const subLi = document.createElement('li');
             subLi.className = `sub-task-item ${subtask.completed ? 'completed' : ''}`;
-            subLi.dataset.id = subtask.id;
+            subLi.dataset.id = parentTodo.id;
+            subLi.dataset.subId = subtask.id;
             subLi.draggable = true;
             subLi.innerHTML = `
                 <div class="toggle"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg></div>
@@ -4538,12 +4601,6 @@ function createProjectPane(project, workspace) {
         );
 
         const shouldAnimate = !prefersReducedMotion.matches && displayTodos.length <= 120;
-        const firstPositions = shouldAnimate ? new Map() : null;
-        if (shouldAnimate) {
-            todoList.querySelectorAll('.todo-item, .sub-task-item').forEach(item => {
-                firstPositions.set(item.dataset.id, item.getBoundingClientRect());
-            });
-        }
         
         const existingNodes = new Map(Array.from(todoList.children).filter(el => el.dataset.id).map(el => [el.dataset.id, el]));
         const displayedIds = new Set(displayTodos.map(todo => String(todo.id)));
@@ -4648,24 +4705,25 @@ function createProjectPane(project, workspace) {
                 lastElement = li;
             });
         }
-        if (shouldAnimate && firstPositions) {
-            todoList.querySelectorAll('.todo-item, .sub-task-item').forEach(item => {
-                const lastPos = item.getBoundingClientRect();
-                const firstPos = firstPositions.get(item.dataset.id);
-                if (firstPos) {
-                    const dx = firstPos.left - lastPos.left;
-                    const dy = firstPos.top - lastPos.top;
-                    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-                        requestAnimationFrame(() => {
-                            item.style.transform = `translate(${dx}px, ${dy}px)`;
-                            item.style.transition = 'transform 0s';
-                            requestAnimationFrame(() => {
-                                item.style.transform = '';
-                                item.style.transition = 'transform 0.35s cubic-bezier(0.25, 0.8, 0.25, 1)';
-                            });
-                        });
-                    }
-                }
+        // 简化的刷新动画 - 只添加淡入效果，避免位置弹跳
+        if (shouldAnimate) {
+            todoList.querySelectorAll('.todo-item, .sub-task-item').forEach((item, index) => {
+                item.style.opacity = '0';
+                item.style.transform = 'translateY(10px)';
+                item.style.transition = 'none';
+                
+                requestAnimationFrame(() => {
+                    item.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
+                    item.style.opacity = '1';
+                    item.style.transform = 'translateY(0)';
+                    
+                    // 清理内联样式
+                    setTimeout(() => {
+                        item.style.opacity = '';
+                        item.style.transform = '';
+                        item.style.transition = '';
+                    }, 250);
+                });
             });
         }
     };
@@ -5452,39 +5510,91 @@ function createProjectPane(project, workspace) {
         [draggedItemData] = sourceArray.splice(sourceIndex, 1);
         
         let operationPerformed = false;
-        const dropTargetEl = document.querySelector('.drop-indicator-top, .drop-indicator-bottom, .drop-zone-parent, .todo-item-placeholder');
+        // 优先查找子任务上的指示器，然后是主任务
+        let dropTargetEl = document.querySelector('.sub-task-item.drop-indicator-top, .sub-task-item.drop-indicator-bottom');
+        if (!dropTargetEl) {
+            dropTargetEl = document.querySelector('.todo-item.drop-indicator-top, .todo-item.drop-indicator-bottom, .drop-zone-parent, .todo-item-placeholder');
+        }
 
         if (dropTargetEl) {
-            if (dropTargetEl.classList.contains('drop-zone-parent')) {
-                // --- 放置为子任务 ---
-                const targetParentTodo = project.todos.find(t => t.id == dropTargetEl.dataset.id);
-                if (targetParentTodo && targetParentTodo.id != draggedItemId) {
-                    targetParentTodo.subtasks = targetParentTodo.subtasks || [];
-                    const newSubtask = { id: `sub_${Date.now()}`, text: draggedItemData.text, completed: draggedItemData.completed };
-                    targetParentTodo.subtasks.push(newSubtask);
-                    // 如果原任务有子任务，也一并移动
-                    if (draggedItemData.subtasks?.length) {
-                         targetParentTodo.subtasks.push(...draggedItemData.subtasks);
+            if (type === 'subtask') {
+                // --- 拖动的是子任务 ---
+                if (dropTargetEl.classList.contains('sub-task-item')) {
+                    // 放置到另一个子任务位置（排序）
+                    const targetParentTodo = project.todos.find(t => t.id == dropTargetEl.dataset.id);
+                    if (targetParentTodo && targetParentTodo.subtasks) {
+                        // 使用 dragover 中保存的目标索引（基于完整数组的索引）
+                        let targetSubtaskIndex = draggedTaskInfo.targetSubtaskIndex;
+                        
+                        if (targetSubtaskIndex !== undefined && targetSubtaskIndex !== -1) {
+                            // 检查源和目标是否在同一个父任务中
+                            const sourceParentTodo = project.todos.find(t => t.id == sourceParentTodoId);
+                            const isSameParent = sourceParentTodo === targetParentTodo;
+                            
+                            // 计算插入位置
+                            let insertIndex;
+                            if (dropTargetEl.classList.contains('drop-indicator-top')) {
+                                // 插入到目标子任务之前
+                                insertIndex = targetSubtaskIndex;
+                                // 如果源在目标之前，且是同一个父任务，需要+1补偿
+                                // 因为源子任务被移除后，目标前移了一位
+                                if (isSameParent && sourceIndex < targetSubtaskIndex) {
+                                    insertIndex++;
+                                }
+                            } else {
+                                // 插入到目标子任务之后
+                                insertIndex = targetSubtaskIndex + 1;
+                                // 如果源在目标之前，且是同一个父任务，需要-1补偿
+                                // 因为源子任务被移除后，目标前移了一位
+                                if (isSameParent && sourceIndex < targetSubtaskIndex) {
+                                    insertIndex--;
+                                }
+                            }
+                            
+                            targetParentTodo.subtasks.splice(insertIndex, 0, draggedItemData);
+                            operationPerformed = true;
+                        }
                     }
-                    operationPerformed = true;
+                } else if (dropTargetEl.classList.contains('todo-item')) {
+                    // 放置到主任务上（变为该主任务的子任务）
+                    const targetParentTodo = project.todos.find(t => t.id == dropTargetEl.dataset.id);
+                    if (targetParentTodo) {
+                        targetParentTodo.subtasks = targetParentTodo.subtasks || [];
+                        targetParentTodo.subtasks.push(draggedItemData);
+                        operationPerformed = true;
+                    }
                 }
             } else {
-                // --- 排序主任务 ---
-                const targetId = dropTargetEl.dataset.id;
-                const targetIndex = project.todos.findIndex(t => t.id == targetId);
-
-                if (targetIndex !== -1) {
-                     const insertIndex = dropTargetEl.classList.contains('drop-indicator-top') ? targetIndex : targetIndex + 1;
-                     project.todos.splice(insertIndex, 0, draggedItemData);
-                     operationPerformed = true;
+                // --- 拖动的是主任务 ---
+                if (dropTargetEl.classList.contains('drop-zone-parent')) {
+                    // 放置为子任务
+                    const targetParentTodo = project.todos.find(t => t.id == dropTargetEl.dataset.id);
+                    if (targetParentTodo && targetParentTodo.id != draggedItemId) {
+                        targetParentTodo.subtasks = targetParentTodo.subtasks || [];
+                        const newSubtask = { id: `sub_${Date.now()}`, text: draggedItemData.text, completed: draggedItemData.completed };
+                        targetParentTodo.subtasks.push(newSubtask);
+                        if (draggedItemData.subtasks?.length) {
+                             targetParentTodo.subtasks.push(...draggedItemData.subtasks);
+                        }
+                        operationPerformed = true;
+                    }
+                } else if (dropTargetEl.classList.contains('todo-item')) {
+                    // 排序主任务
+                    const targetId = dropTargetEl.dataset.id;
+                    const targetIndex = project.todos.findIndex(t => t.id == targetId);
+                    if (targetIndex !== -1) {
+                         const insertIndex = dropTargetEl.classList.contains('drop-indicator-top') ? targetIndex : targetIndex + 1;
+                         project.todos.splice(insertIndex, 0, draggedItemData);
+                         operationPerformed = true;
+                    }
                 } else if (dropTargetEl.classList.contains('todo-item-placeholder')) {
                     // 列表为空时直接放入
                     project.todos.push(draggedItemData);
                     operationPerformed = true;
                 }
             }
-        } else {
-            // 如果没有明确的放置目标（比如拖放到列表底部空白处），则添加到末尾
+        } else if (type === 'task') {
+            // 如果没有明确的放置目标，主任务添加到末尾
             project.todos.push(draggedItemData);
             operationPerformed = true;
         }
@@ -5518,9 +5628,15 @@ function createProjectPane(project, workspace) {
             const isSubtask = draggedEl.classList.contains('sub-task-item');
             const parentTodoEl = isSubtask ? draggedEl.closest('.todo-item') : null;
 
+            const draggedId = isSubtask ? draggedEl.dataset.subId : draggedEl.dataset.id;
+            if (!draggedId) {
+                console.error('无法获取拖动项ID');
+                return;
+            }
+            
             draggedTaskInfo = {
                 sourceProjectId: project.id,
-                draggedItemId: draggedEl.dataset.id,
+                draggedItemId: draggedId,
                 sourceParentTodoId: isSubtask ? parentTodoEl.dataset.id : null,
                 type: isSubtask ? 'subtask' : 'task'
             };
@@ -5532,8 +5648,11 @@ function createProjectPane(project, workspace) {
         todoList.addEventListener('dragover', (e) => {
             if (!draggedTaskInfo) return;
             e.preventDefault(); 
+            e.dataTransfer.dropEffect = 'move';
             
             const draggedEl = todoList.querySelector('.dragging-task');
+            // 如果 dragging-task 类还没有被添加，使用 draggedTaskInfo 中的信息
+            const draggedItemId = draggedTaskInfo.draggedItemId;
 
             const hoverTargetItem = e.target.closest('.todo-item');
             const hoverTargetSubItem = e.target.closest('.sub-task-item');
@@ -5542,15 +5661,31 @@ function createProjectPane(project, workspace) {
             let currentIndicator = '';
 
             // --- 统一的排序和父子关系判断逻辑 ---
-            if (draggedTaskInfo.type === 'subtask' && hoverTargetSubItem && hoverTargetSubItem !== draggedEl) {
+            // 检查悬停目标是否是当前拖动的元素
+            const isHoveringDraggedItem = hoverTargetSubItem && hoverTargetSubItem.dataset.subId === draggedItemId;
+            if (draggedTaskInfo.type === 'subtask' && hoverTargetSubItem && !isHoveringDraggedItem) {
                 // 场景1: 拖动子任务，在其他子任务之间排序
                 const parentTodoEl = hoverTargetSubItem.closest('.todo-item');
-                if (parentTodoEl && parentTodoEl.dataset.id === draggedTaskInfo.sourceParentTodoId) {
+                if (parentTodoEl) {
                     currentTarget = hoverTargetSubItem;
                     const rect = hoverTargetSubItem.getBoundingClientRect();
                     currentIndicator = (e.clientY - rect.top < rect.height / 2) ? 'top' : 'bottom';
+                    
+                    // 保存目标信息用于 drop（基于完整数组的索引）
+                    const targetParentTodo = project.todos.find(t => t.id == parentTodoEl.dataset.id);
+                    if (targetParentTodo && targetParentTodo.subtasks) {
+                        const targetSubtaskId = hoverTargetSubItem.dataset.subId;
+                        const targetSubtaskIndex = targetParentTodo.subtasks.findIndex(st => st.id == targetSubtaskId);
+                        draggedTaskInfo.targetSubtaskIndex = targetSubtaskIndex;
+                        draggedTaskInfo.targetParentTodoId = parentTodoEl.dataset.id;
+                    }
                 }
-            } else if (hoverTargetItem && hoverTargetItem !== draggedEl) {
+            } else if (draggedTaskInfo.type === 'subtask' && hoverTargetItem && hoverTargetItem.dataset.id !== draggedTaskInfo.sourceParentTodoId) {
+                // 场景1b: 拖动子任务，悬停在主任务上（可以变为该主任务的子任务）
+                currentTarget = hoverTargetItem;
+                const rect = hoverTargetItem.getBoundingClientRect();
+                currentIndicator = (e.clientY - rect.top < rect.height / 2) ? 'top' : 'bottom';
+            } else if (hoverTargetItem && hoverTargetItem.dataset.id !== draggedItemId) {
                 // 场景2: 拖动主任务，进行排序或变为子任务
                 currentTarget = hoverTargetItem;
                 const isHoverOnMainPart = e.target.closest('.todo-item-main');
@@ -5639,13 +5774,7 @@ function createProjectPane(project, workspace) {
     });
 
     container.addEventListener('drop', e => {
-        if (draggedTaskInfo && draggedTaskInfo.sourceProjectId === project.id) {
-            e.preventDefault();
-            e.stopPropagation();
-            // 复用 todoList 的放置逻辑，避免顶部区域放置失败
-            handleTodoListDrop(e);
-            return;
-        }
+        // 同项目拖放由 todoList 自己处理
         if (!draggedTaskInfo || draggedTaskInfo.sourceProjectId === project.id) {
             container.classList.remove('drop-zone-project');
             return;
@@ -5974,6 +6103,11 @@ function cleanupDragDropState() {
     document.querySelectorAll('.drop-zone-project, .drop-zone-category, .drag-over, .drag-over-cat, .drop-zone-parent, .drop-indicator-top, .drop-indicator-bottom').forEach(el => 
         el.classList.remove('drop-zone-project', 'drop-zone-category', 'drag-over', 'drag-over-cat', 'drop-zone-parent', 'drop-indicator-top', 'drop-indicator-bottom')
     );
+    // 清理 draggedTaskInfo 中的临时数据
+    if (draggedTaskInfo) {
+        delete draggedTaskInfo.targetSubtaskIndex;
+        delete draggedTaskInfo.targetParentTodoId;
+    }
     document.querySelectorAll('.todo-list.drop-zone-promote').forEach(el => el.classList.remove('drop-zone-promote'));
     // 防止拖拽中残留样式导致的重要任务高亮异常
     if (workspaces[currentWorkspaceIndex]) {
@@ -6138,6 +6272,15 @@ function setupGlobalListeners() {
         const item = e.target.closest('.emoji-picker-item');
         if (!item) return;
         const emoji = item.dataset.emoji;
+        
+        // 处理默认图标选项（emoji 为空字符串）
+        if (emoji === '') {
+            // 清空选择，表示使用默认图标
+            emojiPickerState.selected = [];
+            renderEmojiPickerGrid();
+            return;
+        }
+        
         if (!emoji) return;
         const idx = emojiPickerState.selected.indexOf(emoji);
         if (idx >= 0) emojiPickerState.selected.splice(idx, 1);
@@ -6163,15 +6306,16 @@ function setupGlobalListeners() {
 
     emojiPickerConfirm?.addEventListener('click', () => {
         const list = emojiPickerState.selected.slice();
-        if (list.length === 0) {
-            closeEmojiPicker();
-            return;
-        }
         if (emojiPickerState.mode === 'add-common') {
             list.forEach(addCommonEmoji);
         } else if (emojiPickerState.mode === 'edit' && emojiPickerState.target) {
-            emojiPickerState.onSelect?.(list[0]);
+            // 编辑模式：传递选中的 emoji（可能是空，表示清空）
+            emojiPickerState.onSelect?.(list[0] || null);
         } else {
+            if (list.length === 0) {
+                closeEmojiPicker();
+                return;
+            }
             list.forEach(addRecentEmoji);
             if (typeof emojiPickerState.onSelect === 'function') {
                 emojiPickerState.onSelect(list);
@@ -7166,7 +7310,7 @@ function setupGlobalListeners() {
             });
         });
         workspaceSwitcher.addEventListener('dragstart', e => { const tab = e.target.closest('.workspace-tab'); if (tab) { draggedTabIndex = parseInt(tab.dataset.index, 10); setTimeout(() => tab.classList.add('dragging-tab'), 0); } });
-        workspaceSwitcher.addEventListener('dragover', e => { e.preventDefault(); const targetTab = e.target.closest('.workspace-tab'); if (targetTab && parseInt(targetTab.dataset.index, 10) !== draggedTabIndex) { workspaceSwitcher.querySelectorAll('.drag-over-tab').forEach(t => t.classList.remove('drag-over-tab')); targetTab.classList.add('drag-over-tab'); } });
+        workspaceSwitcher.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; const targetTab = e.target.closest('.workspace-tab'); if (targetTab && parseInt(targetTab.dataset.index, 10) !== draggedTabIndex) { workspaceSwitcher.querySelectorAll('.drag-over-tab').forEach(t => t.classList.remove('drag-over-tab')); targetTab.classList.add('drag-over-tab'); } });
         workspaceSwitcher.addEventListener('dragleave', e => { e.target.closest('.workspace-tab')?.classList.remove('drag-over-tab'); });
         workspaceSwitcher.addEventListener('drop', e => {
             e.preventDefault(); workspaceSwitcher.querySelectorAll('.drag-over-tab').forEach(t => t.classList.remove('drag-over-tab'));
