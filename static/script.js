@@ -6415,9 +6415,24 @@ function setupGlobalListeners() {
                     const data = getFolderItemData(type, id);
                     if (data) {
                         delete data.folderId;
-                        // 设置新位置
-                        const dropX = (e.pageX / currentZoom) - 100;
-                        const dropY = (e.pageY / currentZoom) - 50;
+                        // 设置新位置 - 根据元素类型使用不同的偏移量
+                        let offsetX = 100;
+                        let offsetY = 50;
+                        if (type === 'photo' && data.size) {
+                            // 图片居中于鼠标位置
+                            const width = parseInt(data.size.width) || 240;
+                            const height = parseInt(data.size.height) || 180;
+                            offsetX = width / 2;
+                            offsetY = height / 2;
+                        } else if (type === 'note') {
+                            offsetX = 125; // 便签宽度的一半
+                            offsetY = 75;  // 便签高度的一半
+                        } else if (type === 'project') {
+                            offsetX = 150; // 项目窗口宽度的一半
+                            offsetY = 100; // 项目窗口高度的一半
+                        }
+                        const dropX = (e.pageX / currentZoom) - offsetX;
+                        const dropY = (e.pageY / currentZoom) - offsetY;
                         data.position = { left: `${dropX}px`, top: `${dropY}px` };
                     }
                     folder.items.splice(itemIndex, 1);
