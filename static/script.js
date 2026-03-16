@@ -6940,6 +6940,13 @@ function setupGlobalListeners() {
                 return;
             }
         }
+        
+        // F5 刷新页面
+        if (e.key === 'F5') {
+            e.preventDefault();
+            window.location.reload();
+            return;
+        }
         // +++ 插入结束 +++
         
         if (!appSettings.shortcutsEnabled) return;
@@ -7175,6 +7182,8 @@ function setupGlobalListeners() {
             ${shapeOption}
             ${emojiOption}
             <div class="dropdown-divider"></div>
+            <div class="dropdown-option" data-action="refresh">🔄 刷新页面 (F5)</div>
+            <div class="dropdown-divider"></div>
             <div class="dropdown-option" data-action="toggleAllPanels">${allPanelsText} (Alt+${appSettings.shortcutMap.toggle.toUpperCase()})</div>
             <div class="dropdown-divider"></div>
             <div class="dropdown-option" data-action="toggleTheme">${themeToggleText}</div>
@@ -7200,6 +7209,9 @@ function setupGlobalListeners() {
                 case 'newPhoto':
                     lastPhotoMenuPoint = { x: e.pageX, y: e.pageY };
                     addPhotoInput?.click();
+                    break;
+                case 'refresh':
+                    window.location.reload();
                     break;
                 case 'toggleAllPanels': toggleAllUiPanels(); break;
                 case 'toggleTheme': toggleTheme(); break;
