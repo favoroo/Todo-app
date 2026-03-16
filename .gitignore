@@ -154,3 +154,6 @@ todo_app.db
 代码汇总.json
 代码汇总.py
 优化历史提示词.txt
+
+# IDE
+.trae/

@@ -5,31 +5,21 @@ import sys
 import json
 import socket
 import time
+from typing import Optional, Dict, Any, List
 from flask import Flask, render_template, request, jsonify, g
-# === 关键修复: 分开导入 SQLAlchemy 和 UniqueConstraint ===
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import UniqueConstraint, text
 
 
-# ==================== 配置 ====================
-# RUN_MODE: 'SERVER', 'STATIC', 或 'WEBVIEW'
-#   - 'SERVER':  启动Flask服务器，提供动态多用户Web服务。
-#   - 'STATIC':  生成一个单用户的静态HTML文件，不启动服务器。
-#   - 'WEBVIEW': 以本地桌面应用模式启动，使用pywebview。
-RUN_MODE = 'SERVER'  # <-- 在这里切换模式: 'SERVER', 'STATIC', 'WEBVIEW'
-
-# 在 STATIC 模式下，指定要导出哪个用户的IP地址。
-# 如果留空，将导出第一个找到的用户的数据。
-STATIC_EXPORT_IP = "" 
-
-# 服务器配置 (仅在 SERVER 模式下有效)
-PORT = 5009
-# 路由前缀根据模式动态设置
-ROUTE_PREFIX = ""
-# ============================================
+RUN_MODE = os.environ.get('RUN_MODE', 'SERVER')
+STATIC_EXPORT_IP = os.environ.get('STATIC_EXPORT_IP', "")
+PORT = int(os.environ.get('PORT', 5009))
+MAX_CONTENT_LENGTH = int(os.environ.get('MAX_CONTENT_LENGTH', 10 * 1024 * 1024))
+ROUTE_PREFIX = os.environ.get('ROUTE_PREFIX', "")
 
 # --- 基础配置 ---
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'todo_app.db')
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -42,16 +32,13 @@ class User(db.Model):
     workspaces = db.relationship('Workspace', backref='user', lazy=True, cascade="all, delete-orphan")
 
 class Workspace(db.Model):
-    __tablename__ = 'workspace' # 推荐显式指定表名
+    __tablename__ = 'workspace'
     
     id = db.Column(db.Integer, primary_key=True)
-    
-    # 移除 client_id 上的 unique=True
     client_id = db.Column(db.String(36), nullable=False)
-    
     name = db.Column(db.String(100), nullable=False)
-    order_index = db.Column(db.Integer, nullable=False, default=0)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    order_index = db.Column(db.Integer, nullable=False, default=0, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     
     projects_json = db.Column(db.LargeBinary, nullable=False)
     notes_json = db.Column(db.LargeBinary, nullable=False)
@@ -60,7 +47,6 @@ class Workspace(db.Model):
     photos_json = db.Column(db.LargeBinary, nullable=True)
     folders_json = db.Column(db.LargeBinary, nullable=True)
     
-    # 添加一个联合唯一约束
     __table_args__ = (
         UniqueConstraint('user_id', 'client_id', name='_user_client_uc'),
     )
@@ -100,6 +86,28 @@ def ensure_workspace_schema():
             conn.execute(text("ALTER TABLE workspace ADD COLUMN photos_json BLOB"))
         if 'folders_json' not in columns:
             conn.execute(text("ALTER TABLE workspace ADD COLUMN folders_json BLOB"))
+
+def safe_json_loads(data: Optional[bytes], default: Optional[Dict] = None) -> Dict[str, Any]:
+    if default is None:
+        default = {}
+    if not data:
+        return default
+    try:
+        return json.loads(data.decode('utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return default
+
+def serialize_workspace(ws: Workspace) -> Dict[str, Any]:
+    return {
+        "id": ws.client_id,
+        "name": ws.name,
+        "projects": safe_json_loads(ws.projects_json),
+        "notes": safe_json_loads(ws.notes_json),
+        "shapes": safe_json_loads(ws.shapes_json),
+        "emojis": safe_json_loads(ws.emojis_json),
+        "photos": safe_json_loads(ws.photos_json),
+        "folders": safe_json_loads(ws.folders_json)
+    }
 
 class FilteredStream:
     def __init__(self, stream, patterns, log_path=None):
@@ -151,18 +159,7 @@ def index():
         print(f"[workspace] no workspaces found; created default for user {user.ip_address}")
         user_workspaces = Workspace.query.filter_by(user_id=user.id).order_by(Workspace.order_index).all()
     
-    workspaces_data = []
-    for ws in user_workspaces:
-        workspaces_data.append({
-            "id": ws.client_id,
-            "name": ws.name,
-            "projects": json.loads(ws.projects_json.decode('utf-8')),
-            "notes": json.loads(ws.notes_json.decode('utf-8')),
-            "shapes": json.loads(ws.shapes_json.decode('utf-8')) if ws.shapes_json else {},
-            "emojis": json.loads(ws.emojis_json.decode('utf-8')) if ws.emojis_json else {},
-            "photos": json.loads(ws.photos_json.decode('utf-8')) if ws.photos_json else {},
-            "folders": json.loads(ws.folders_json.decode('utf-8')) if ws.folders_json else {}
-        })
+    workspaces_data = [serialize_workspace(ws) for ws in user_workspaces]
 
     initial_data = { "currentWorkspaceIndex": 0, "workspaces": workspaces_data }
     template_mode = 'SERVER' if RUN_MODE in ['SERVER', 'WEBVIEW'] else 'STATIC'
@@ -179,26 +176,46 @@ def save_data():
 
     client_workspaces_data = data_from_client.get('workspaces')
     
+    if not isinstance(client_workspaces_data, list):
+        return jsonify({"status": "error", "message": "workspaces must be a list"}), 400
+    
     try:
-        Workspace.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+        client_ids = {str(ws_data.get('id')) for ws_data in client_workspaces_data if ws_data.get('id')}
+        
+        existing_workspaces = {
+            ws.client_id: ws for ws in Workspace.query.filter_by(user_id=user.id).all()
+        }
+        
+        for client_id in set(existing_workspaces.keys()) - client_ids:
+            db.session.delete(existing_workspaces[client_id])
         
         for index, ws_data in enumerate(client_workspaces_data):
-            client_id = ws_data.get('id')
-            if not client_id: continue
+            client_id = str(ws_data.get('id')) if ws_data.get('id') else None
+            if not client_id:
+                continue
 
-            new_workspace = Workspace(
-                client_id=str(client_id),
-                name=ws_data.get('name', 'Untitled'),
-                projects_json=json.dumps(ws_data.get('projects', {})).encode('utf-8'),
-                notes_json=json.dumps(ws_data.get('notes', {})).encode('utf-8'),
-                shapes_json=json.dumps(ws_data.get('shapes', {})).encode('utf-8'),
-                emojis_json=json.dumps(ws_data.get('emojis', {})).encode('utf-8'),
-                photos_json=json.dumps(ws_data.get('photos', {})).encode('utf-8'),
-                folders_json=json.dumps(ws_data.get('folders', {})).encode('utf-8'),
-                order_index=index,
-                user_id=user.id
-            )
-            db.session.add(new_workspace)
+            workspace_data = {
+                'name': ws_data.get('name', 'Untitled'),
+                'projects_json': json.dumps(ws_data.get('projects', {})).encode('utf-8'),
+                'notes_json': json.dumps(ws_data.get('notes', {})).encode('utf-8'),
+                'shapes_json': json.dumps(ws_data.get('shapes', {})).encode('utf-8'),
+                'emojis_json': json.dumps(ws_data.get('emojis', {})).encode('utf-8'),
+                'photos_json': json.dumps(ws_data.get('photos', {})).encode('utf-8'),
+                'folders_json': json.dumps(ws_data.get('folders', {})).encode('utf-8'),
+                'order_index': index,
+            }
+
+            if client_id in existing_workspaces:
+                ws = existing_workspaces[client_id]
+                for key, value in workspace_data.items():
+                    setattr(ws, key, value)
+            else:
+                new_workspace = Workspace(
+                    client_id=client_id,
+                    user_id=user.id,
+                    **workspace_data
+                )
+                db.session.add(new_workspace)
 
         db.session.commit()
         return jsonify({"status": "ok", "message": "Data saved successfully"})
@@ -236,17 +253,7 @@ def build_static_html():
         print(f"Exporting data for user with IP: {user_to_export.ip_address}")
 
         user_workspaces = Workspace.query.filter_by(user_id=user_to_export.id).order_by(Workspace.order_index).all()
-        workspaces_data = []
-        for ws in user_workspaces:
-            workspaces_data.append({
-                "id": ws.client_id, "name": ws.name,
-                "projects": json.loads(ws.projects_json.decode('utf-8')),
-                "notes": json.loads(ws.notes_json.decode('utf-8')),
-                "shapes": json.loads(ws.shapes_json.decode('utf-8')) if ws.shapes_json else {},
-                "emojis": json.loads(ws.emojis_json.decode('utf-8')) if ws.emojis_json else {},
-                "photos": json.loads(ws.photos_json.decode('utf-8')) if ws.photos_json else {},
-                "folders": json.loads(ws.folders_json.decode('utf-8')) if ws.folders_json else {}
-            })
+        workspaces_data = [serialize_workspace(ws) for ws in user_workspaces]
         
         initial_data = {"currentWorkspaceIndex": 0, "workspaces": workspaces_data}
         output_html = render_template('index.html', initial_data=initial_data, mode='STATIC', run_mode=RUN_MODE)
