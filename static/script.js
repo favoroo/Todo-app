@@ -3783,6 +3783,94 @@ function openFolderPanelUI(folder, folderContainer) {
         // 全局 drop 处理器会处理添加逻辑
     });
 
+    // 文件夹面板 body 右键事件 - 处理 folder-item 的右键菜单
+    body.addEventListener('contextmenu', (e) => {
+        const itemEl = e.target.closest('.folder-item');
+        if (!itemEl) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+        
+        const itemIndex = parseInt(itemEl.dataset.itemIndex);
+        const itemType = itemEl.dataset.itemType;
+        const itemId = itemEl.dataset.itemId;
+        
+        if (isNaN(itemIndex) || !itemType || !itemId) return;
+        
+        const item = folder.items[itemIndex];
+        if (!item) return;
+        
+        const data = getFolderItemData(item.type, item.id);
+        if (!data) return;
+        
+        // 关闭其他菜单
+        document.querySelectorAll('.custom-dropdown-menu').forEach(m => m.remove());
+        
+        // 创建菜单
+        const menu = document.createElement('div');
+        menu.className = 'custom-dropdown-menu';
+        menu.innerHTML = `
+            <div class="dropdown-option" data-action="dragout">📤 拖出到工作区</div>
+            <div class="dropdown-divider"></div>
+            <div class="dropdown-option danger" data-action="delete">🗑️ 从文件夹移除</div>
+        `;
+        
+        // 定位菜单
+        let menuX = e.clientX;
+        let menuY = e.clientY;
+        const menuWidth = 150;
+        const menuHeight = 80;
+        
+        if (menuX + menuWidth > window.innerWidth) {
+            menuX = window.innerWidth - menuWidth - 10;
+        }
+        if (menuY + menuHeight > window.innerHeight) {
+            menuY = window.innerHeight - menuHeight - 10;
+        }
+        
+        menu.style.left = `${menuX}px`;
+        menu.style.top = `${menuY}px`;
+        menu.style.zIndex = '99999'; // 确保菜单在最上层
+        document.body.appendChild(menu);
+        
+        // 强制重绘后添加 visible 类显示菜单
+        requestAnimationFrame(() => {
+            menu.classList.add('visible');
+        });
+        
+        console.log('Menu created at:', menuX, menuY);
+        
+        // 处理菜单点击
+        menu.addEventListener('click', (me) => {
+            const action = me.target.dataset.action;
+            if (action === 'dragout') {
+                menu.remove();
+                dragOutFolderItem(folder, itemIndex, item, data);
+            } else if (action === 'delete') {
+                menu.remove();
+                removeItemFromFolder(folder, itemIndex);
+            }
+        });
+        
+        // 点击外部关闭菜单
+        const closeMenuHandler = (ce) => {
+            if (!menu.contains(ce.target)) {
+                menu.remove();
+                document.removeEventListener('click', closeMenuHandler);
+            }
+        };
+        
+        setTimeout(() => {
+            document.addEventListener('click', closeMenuHandler);
+        }, 10);
+        
+        // 阻止菜单上的右键事件
+        menu.addEventListener('contextmenu', (ce) => {
+            ce.preventDefault();
+            ce.stopPropagation();
+        });
+    });
+
     panel.addEventListener('mousedown', (e) => {
         e.stopPropagation();
     });
@@ -3881,81 +3969,6 @@ function renderFolderPanelItems(body, folder) {
             if (e.target === removeBtn) return;
             body.querySelectorAll('.folder-item.active').forEach(el => el.classList.remove('active'));
             itemEl.classList.add('active');
-        });
-
-        // 右键菜单 - 支持拖出到工作区
-        itemEl.addEventListener('contextmenu', (e) => {
-            console.log('Context menu triggered on folder item:', item.type, item.id);
-            e.preventDefault();
-            e.stopPropagation();
-            
-            // 先关闭其他菜单
-            document.querySelectorAll('.custom-dropdown-menu').forEach(m => m.remove());
-            
-            // 使用 setTimeout 确保在事件处理完成后再创建菜单
-            setTimeout(() => {
-                const menu = document.createElement('div');
-                menu.className = 'custom-dropdown-menu';
-                menu.innerHTML = `
-                    <div class="dropdown-option" data-action="dragout">📤 拖出到工作区</div>
-                    <div class="dropdown-divider"></div>
-                    <div class="dropdown-option danger" data-action="delete">🗑️ 从文件夹移除</div>
-                `;
-                
-                // 定位菜单 - 确保在视口内
-                let menuX = e.clientX;
-                let menuY = e.clientY;
-                const menuWidth = 150;
-                const menuHeight = 80;
-                
-                if (menuX + menuWidth > window.innerWidth) {
-                    menuX = window.innerWidth - menuWidth - 10;
-                }
-                if (menuY + menuHeight > window.innerHeight) {
-                    menuY = window.innerHeight - menuHeight - 10;
-                }
-                
-                menu.style.position = 'fixed';
-                menu.style.left = `${menuX}px`;
-                menu.style.top = `${menuY}px`;
-                menu.style.zIndex = '99999';
-                menu.style.minWidth = '140px';
-                document.body.appendChild(menu);
-                
-                console.log('Context menu created and appended to body');
-                
-                // 处理菜单点击
-                menu.addEventListener('click', (me) => {
-                    const action = me.target.dataset.action;
-                    console.log('Context menu action:', action);
-                    if (action === 'dragout') {
-                        menu.remove();
-                        dragOutFolderItem(folder, index, item, data);
-                    } else if (action === 'delete') {
-                        menu.remove();
-                        removeItemFromFolder(folder, index);
-                    }
-                });
-                
-                // 点击外部关闭菜单
-                const closeMenuHandler = (ce) => {
-                    if (!menu.contains(ce.target)) {
-                        menu.remove();
-                        document.removeEventListener('click', closeMenuHandler);
-                    }
-                };
-                
-                // 延迟添加点击监听器，避免立即触发
-                setTimeout(() => {
-                    document.addEventListener('click', closeMenuHandler);
-                }, 10);
-                
-                // 阻止菜单上的右键事件
-                menu.addEventListener('contextmenu', (ce) => {
-                    ce.preventDefault();
-                    ce.stopPropagation();
-                });
-            }, 0);
         });
 
         // 双击展开详情（不移出）
