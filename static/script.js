@@ -3862,6 +3862,7 @@ function renderFolderPanelItems(body, folder) {
             thumb.className = 'folder-item-thumbnail';
             thumb.src = data.src;
             thumb.alt = '图片';
+            thumb.draggable = false; // 防止图片本身的拖拽干扰
             itemEl.appendChild(thumb);
         }
 
@@ -3884,6 +3885,7 @@ function renderFolderPanelItems(body, folder) {
 
         // 右键菜单 - 支持拖出到工作区
         itemEl.addEventListener('contextmenu', (e) => {
+            console.log('Context menu triggered on folder item:', item.type, item.id);
             e.preventDefault();
             e.stopPropagation();
             closeAllDropdowns();
@@ -3891,22 +3893,37 @@ function renderFolderPanelItems(body, folder) {
             const menu = document.createElement('div');
             menu.className = 'custom-dropdown-menu';
             menu.innerHTML = `
-                <div class="dropdown-option" data-action="dragout">拖出到工作区</div>
+                <div class="dropdown-option" data-action="dragout">📤 拖出到工作区</div>
                 <div class="dropdown-divider"></div>
-                <div class="dropdown-option danger" data-action="delete">从文件夹移除</div>
+                <div class="dropdown-option danger" data-action="delete">🗑️ 从文件夹移除</div>
             `;
             
-            // 定位菜单
-            const rect = itemEl.getBoundingClientRect();
+            // 定位菜单 - 确保在视口内
+            let menuX = e.clientX;
+            let menuY = e.clientY;
+            const menuWidth = 150; // 预估菜单宽度
+            const menuHeight = 80; // 预估菜单高度
+            
+            if (menuX + menuWidth > window.innerWidth) {
+                menuX = window.innerWidth - menuWidth - 10;
+            }
+            if (menuY + menuHeight > window.innerHeight) {
+                menuY = window.innerHeight - menuHeight - 10;
+            }
+            
             menu.style.position = 'fixed';
-            menu.style.left = `${e.clientX}px`;
-            menu.style.top = `${e.clientY}px`;
-            menu.style.zIndex = '10000';
+            menu.style.left = `${menuX}px`;
+            menu.style.top = `${menuY}px`;
+            menu.style.zIndex = '99999';
+            menu.style.minWidth = '140px';
             document.body.appendChild(menu);
+            
+            console.log('Context menu created and appended to body');
             
             // 处理菜单点击
             menu.addEventListener('click', (me) => {
                 const action = me.target.dataset.action;
+                console.log('Context menu action:', action);
                 if (action === 'dragout') {
                     closeAllDropdowns();
                     dragOutFolderItem(folder, index, item, data);
@@ -3916,13 +3933,11 @@ function renderFolderPanelItems(body, folder) {
                 }
             });
             
-            // 点击外部关闭菜单
-            setTimeout(() => {
-                document.addEventListener('click', function closeMenu() {
-                    closeAllDropdowns();
-                    document.removeEventListener('click', closeMenu);
-                }, { once: true });
-            }, 0);
+            // 阻止菜单上的右键事件
+            menu.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
         });
 
         // 双击展开详情（不移出）
@@ -7098,6 +7113,10 @@ function setupGlobalListeners() {
 
     document.body.addEventListener('contextmenu', e => {
         if (e.target.closest('.project-container, .note-container, .shape-container, .emoji-container, .photo-container, .folder-container')) {
+            return;
+        }
+        
+        if (e.target.closest('.folder-item, .folder-panel')) {
             return;
         }
         
