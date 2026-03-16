@@ -3931,12 +3931,16 @@ function renderFolderPanelItems(body, folder) {
 
         // 拖出文件夹
         itemEl.addEventListener('dragstart', (e) => {
-            e.dataTransfer.setData('application/x-folder-item', JSON.stringify({
+            const dragData = JSON.stringify({
                 folderId: folder.id,
                 itemIndex: index,
                 type: item.type,
                 id: item.id
-            }));
+            });
+            // 使用多种数据格式以确保兼容性
+            e.dataTransfer.setData('application/x-folder-item', dragData);
+            e.dataTransfer.setData('text/plain', dragData);
+            e.dataTransfer.effectAllowed = 'move';
             itemEl.classList.add('dragging');
         });
 
@@ -6363,15 +6367,22 @@ function setupGlobalListeners() {
     
     // 全局 drop 事件处理器 - 处理从文件夹面板拖出的项目
     document.addEventListener('dragover', (e) => {
-        // 允许放置
-        if (e.dataTransfer.types.includes('application/x-folder-item')) {
+        // 允许放置 - 检查多种数据格式以确保 webview 兼容性
+        const types = e.dataTransfer.types || [];
+        const hasFolderItem = types.includes('application/x-folder-item') || 
+                              types.includes('text/plain');
+        if (hasFolderItem) {
             e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
         }
     });
     
     document.addEventListener('drop', (e) => {
-        // 处理从文件夹面板拖出的项目
-        const folderItemData = e.dataTransfer.getData('application/x-folder-item');
+        // 处理从文件夹面板拖出的项目 - 尝试多种数据格式
+        let folderItemData = e.dataTransfer.getData('application/x-folder-item');
+        if (!folderItemData) {
+            folderItemData = e.dataTransfer.getData('text/plain');
+        }
         if (folderItemData) {
             e.preventDefault();
             try {
