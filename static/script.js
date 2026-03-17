@@ -12,14 +12,14 @@ function dataURLtoBlob(dataurl) {
 let workspaces = [];
 let currentWorkspaceIndex = 0;
 let highestZIndex = 1;
-let highestShapeZIndex = 5000;
-const SHAPE_Z_INDEX_BASE = 5000;
-let highestEmojiZIndex = 5000;
+let highestShapeZIndex = 10000;
+const SHAPE_Z_INDEX_BASE = 10000;
+let highestEmojiZIndex = 10000;
 const EMOJI_Z_INDEX_BASE = SHAPE_Z_INDEX_BASE;
-let highestPhotoZIndex = 5000;
+let highestPhotoZIndex = 10000;
 const PHOTO_Z_INDEX_BASE = SHAPE_Z_INDEX_BASE;
-let highestFolderZIndex = 6000;
-const FOLDER_Z_INDEX_BASE = 6000;
+let highestFolderZIndex = 8000;
+const FOLDER_Z_INDEX_BASE = 8000;
 let openFolderPanel = null; // 当前打开的文件夹面板
 let draggedTaskInfo = null;
 let isSwitcherVisible = false;
@@ -3031,7 +3031,7 @@ function createEmojiPane(emoji) {
     });
 
     if (!emoji.zIndex || emoji.zIndex < EMOJI_Z_INDEX_BASE) {
-        emoji.zIndex = SHAPE_Z_INDEX_BASE - 1;
+        emoji.zIndex = highestEmojiZIndex++;
     }
     container.style.zIndex = emoji.zIndex;
 
@@ -3137,7 +3137,7 @@ function createPhotoPane(photo) {
     });
 
     if (!photo.zIndex || photo.zIndex < PHOTO_Z_INDEX_BASE) {
-        photo.zIndex = SHAPE_Z_INDEX_BASE - 1;
+        photo.zIndex = highestPhotoZIndex++;
     }
     container.style.zIndex = photo.zIndex;
 
@@ -3314,7 +3314,7 @@ function createShapePane(shape) {
     });
 
     if (!shape.zIndex || shape.zIndex < SHAPE_Z_INDEX_BASE) {
-        shape.zIndex = SHAPE_Z_INDEX_BASE - 1;
+        shape.zIndex = highestShapeZIndex++;
     }
     container.style.zIndex = shape.zIndex;
 
@@ -3353,23 +3353,31 @@ function createFolderPane(folder) {
     const folderIcon = node.querySelector('.folder-icon');
     const folderDefaultIcon = node.querySelector('.folder-default-icon');
     const folderEmojiIcon = node.querySelector('.folder-emoji-icon');
+    const folderIconText = node.querySelector('.folder-icon-text');
     const folderName = node.querySelector('.folder-name');
     const folderBadge = node.querySelector('.folder-badge');
     const appContainer = document.getElementById('app-container');
 
-    folder.name ||= '新文件夹';
+    folder.name ||= 'Folder';
     folder.color ||= '#5ac8fa';
-    folder.items ||= []; // 存储 { type: 'note'|'project'|'photo', id: string }
+    folder.items ||= [];
 
     container.dataset.folderId = folder.id;
     container.style.top = folder.position.top;
     container.style.left = folder.position.left;
     container.style.setProperty('--folder-color', folder.color);
+    
+    const folderTextColor = getContrastColor(folder.color);
+    container.style.setProperty('--folder-text-color', folderTextColor);
+    container.style.setProperty('--folder-icon-color', folderTextColor);
+    
     folderName.textContent = folder.name;
+    if (folderIconText) {
+        folderIconText.textContent = folder.name;
+    }
     folderBadge.textContent = folder.items.length;
     folderBadge.dataset.count = folder.items.length;
 
-    // 更新文件夹图标显示
     const updateFolderIcon = () => {
         if (folder.icon) {
             folderEmojiIcon.textContent = folder.icon;
@@ -3449,27 +3457,44 @@ function createFolderPane(folder) {
     });
 
     const enterFolderNameEdit = () => {
-        folderName.contentEditable = 'true';
-        folderName.focus();
-        document.execCommand('selectAll', false, null);
-        const exitEdit = () => {
-            folderName.contentEditable = 'false';
-            const newName = folderName.textContent.trim() || '未命名文件夹';
-            if (folder.name !== newName) {
+        if (folderIconText) {
+            folderIconText.contentEditable = 'true';
+            folderIconText.focus();
+            document.execCommand('selectAll', false, null);
+            const exitEdit = () => {
+                folderIconText.contentEditable = 'false';
+                const newName = folderIconText.textContent.trim();
+                recordState();
+                folder.name = newName;
+                folderName.textContent = newName;
+                debouncedSave();
+            };
+            folderIconText.addEventListener('blur', exitEdit, { once: true });
+            folderIconText.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    folderIconText.blur();
+                }
+            });
+        } else {
+            folderName.contentEditable = 'true';
+            folderName.focus();
+            document.execCommand('selectAll', false, null);
+            const exitEdit = () => {
+                folderName.contentEditable = 'false';
+                const newName = folderName.textContent.trim();
                 recordState();
                 folder.name = newName;
                 debouncedSave();
-            } else {
-                folderName.textContent = folder.name;
-            }
-        };
-        folderName.addEventListener('blur', exitEdit, { once: true });
-        folderName.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                folderName.blur();
-            }
-        });
+            };
+            folderName.addEventListener('blur', exitEdit, { once: true });
+            folderName.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    folderName.blur();
+                }
+            });
+        }
     };
 
     const openFolderColorPicker = () => {
@@ -3482,6 +3507,9 @@ function createFolderPane(folder) {
         tempColorInput.addEventListener('input', () => {
             folder.color = tempColorInput.value;
             container.style.setProperty('--folder-color', folder.color);
+            const newTextColor = getContrastColor(folder.color);
+            container.style.setProperty('--folder-text-color', newTextColor);
+            container.style.setProperty('--folder-icon-color', newTextColor);
             debouncedSave();
         });
         tempColorInput.addEventListener('blur', () => {
@@ -3562,7 +3590,7 @@ function createFolderPane(folder) {
     });
 
     if (!folder.zIndex || folder.zIndex < FOLDER_Z_INDEX_BASE) {
-        folder.zIndex = FOLDER_Z_INDEX_BASE;
+        folder.zIndex = highestFolderZIndex++;
     }
     container.style.zIndex = folder.zIndex;
 
@@ -4744,8 +4772,12 @@ function createProjectPane(project, workspace) {
             subLi.draggable = true;
             subLi.innerHTML = `
                 <div class="toggle"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg></div>
-                <span class="text">${escapeHTML(subtask.text)}</span>
-                <div class="actions"><button class="delete-btn" title="删除任务">&times;</button></div>
+                <span class="text" style="user-select: text;">${escapeHTML(subtask.text)}</span>
+                <div class="actions">
+                    <button class="remind-btn" title="设置提醒"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>
+                    <button class="important-btn" title="标记重要"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>
+                    <button class="delete-btn" title="删除任务">&times;</button>
+                </div>
             `;
             subTaskListEl.appendChild(subLi);
         });
@@ -4763,7 +4795,6 @@ function createProjectPane(project, workspace) {
             (b.isImportant ? 1 : 0) - (a.isImportant ? 1 : 0)
         );
 
-        const shouldAnimate = !prefersReducedMotion.matches && displayTodos.length <= 120;
         
         const existingNodes = new Map(Array.from(todoList.children).filter(el => el.dataset.id).map(el => [el.dataset.id, el]));
         const displayedIds = new Set(displayTodos.map(todo => String(todo.id)));
@@ -4816,7 +4847,11 @@ function createProjectPane(project, workspace) {
                                         <div class="toggle"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg></div>
                                         <span class="text"></span>
                                         <div class="category-tag-dot" style="display: none;" title=""></div>
-                                        <div class="actions"><button class="delete-btn" title="删除任务">&times;</button></div>
+                                        <div class="actions">
+                                            <button class="remind-btn" title="设置提醒"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>
+                                            <button class="important-btn" title="标记重要"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>
+                                            <button class="delete-btn" title="删除任务">&times;</button>
+                                        </div>
                                     </div>
                                     <div class="todo-meta"></div>
                                     <ul class="sub-task-list"></ul>`;
@@ -4868,27 +4903,7 @@ function createProjectPane(project, workspace) {
                 lastElement = li;
             });
         }
-        // 简化的刷新动画 - 只添加淡入效果，避免位置弹跳
-        if (shouldAnimate) {
-            todoList.querySelectorAll('.todo-item, .sub-task-item').forEach((item, index) => {
-                item.style.opacity = '0';
-                item.style.transform = 'translateY(10px)';
-                item.style.transition = 'none';
-                
-                requestAnimationFrame(() => {
-                    item.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
-                    item.style.opacity = '1';
-                    item.style.transform = 'translateY(0)';
-                    
-                    // 清理内联样式
-                    setTimeout(() => {
-                        item.style.opacity = '';
-                        item.style.transform = '';
-                        item.style.transition = '';
-                    }, 250);
-                });
-            });
-        }
+        // 简化的刷新动画 - 已移除以避免撤回时的全局抖动
     };
 
     const setupProjectHeader = () => {
@@ -5371,6 +5386,22 @@ function createProjectPane(project, workspace) {
             });
         };
 
+        // 阻止在文本上按下鼠标时触发拖动
+        todoList.addEventListener('mousedown', (e) => {
+            // 如果点击的是文本区域或复选框，不阻止默认行为
+            if (e.target.classList.contains('text') || e.target.closest('.text') || 
+                e.target.closest('.toggle') || e.target.closest('.delete-btn') ||
+                e.target.closest('.remind-btn') || e.target.closest('.important-btn')) {
+                return;
+            }
+            
+            // 如果有文本被选中，允许拖动
+            const selection = window.getSelection();
+            if (selection && selection.toString().length > 0) {
+                return;
+            }
+        });
+
         todoList.addEventListener('click', e => { 
             const item = e.target.closest('.todo-item, .sub-task-item'); if (!item) return; 
             const isSubtask = item.classList.contains('sub-task-item');
@@ -5385,11 +5416,50 @@ function createProjectPane(project, workspace) {
                 if (e.target.closest('.toggle')) { 
                     recordState(); 
                     subtask.completed = !subtask.completed; 
-                    // 直接更新 DOM 而不是重新渲染 - 只需要切换 completed 类，CSS 会处理勾选图标
                     item.classList.toggle('completed', subtask.completed);
                     debouncedSave(); 
+                    return;
                 } 
-                else if (e.target.closest('.delete-btn')) { recordState(); todo.subtasks = todo.subtasks.filter(st => st.id != subtaskId); debouncedSave(); renderTodos(); }
+                else if (e.target.closest('.delete-btn')) { recordState(); todo.subtasks = todo.subtasks.filter(st => st.id != subtaskId); debouncedSave(); renderTodos(); return; }
+                
+                if (e.target.closest('.important-btn')) {
+                    recordState();
+                    todo.isImportant = !todo.isImportant;
+                    parentItem.classList.toggle('important-task', !!todo.isImportant);
+                    debouncedSave();
+                    return;
+                }
+                
+                if (e.target.closest('.remind-btn')) {
+                    (async () => {
+                        const value = await showCustomModal({
+                            title: '设置任务提醒',
+                            type: 'prompt',
+                            inputType: 'datetime-local',
+                            initialValue: formatDateTimeLocalInput(todo.remindTime),
+                            message: `当前时间：${formatDateTime(new Date())}`
+                        });
+                        if (!value) return;
+                        const iso = parseDateTimeInput(value);
+                        const due = parseDateTimeToMs(value);
+                        if (!iso || due === null) { showToast('时间格式无效', 'error'); return; }
+                        if (due <= Date.now()) {
+                            showToast('提醒时间需晚于当前时间', 'error');
+                            logReminderEvent('remind_time_invalid', { input: value, due, now: Date.now(), todoId: todo.id });
+                            return;
+                        }
+                        recordState();
+                        todo.remindTime = iso;
+                        todo.remindAt = due;
+                        todo.remindNotified = false;
+                        debouncedSave();
+                        renderTodos();
+                        scheduleNextReminder();
+                        logReminderEvent('remind_time_set', { input: value, due, now: Date.now(), todoId: todo.id });
+                    })();
+                    return;
+                }
+                return;
             } else {
                 if (e.target.closest('.toggle')) { 
                     recordState(); 
@@ -5405,9 +5475,59 @@ function createProjectPane(project, workspace) {
                         }
                     });
                     debouncedSave(); 
+                    
+                    // 如果当前处于待办或已完成视图，且状态改变导致不符合过滤条件，则播放消失动画并移除
+                    if ((currentFilter === 'active' && todo.completed) || (currentFilter === 'completed' && !todo.completed)) {
+                        item.classList.add('fade-out');
+                        setTimeout(() => {
+                            item.remove();
+                            // 如果列表空了，重新渲染以显示空状态
+                            if (todoList.children.length === 0 || (todoList.children.length === 1 && todoList.children[0].classList.contains('empty-state'))) {
+                                renderTodos();
+                            }
+                        }, 300);
+                    }
                     return; 
                 }
                 if (e.target.closest('.delete-btn')) { recordState(); project.todos = project.todos.filter(t => t.id != todoId); debouncedSave(); renderTodos(); return; }
+                
+                if (e.target.closest('.important-btn')) {
+                    recordState();
+                    todo.isImportant = !todo.isImportant;
+                    item.classList.toggle('important-task', !!todo.isImportant);
+                    debouncedSave();
+                    return;
+                }
+                
+                if (e.target.closest('.remind-btn')) {
+                    (async () => {
+                        const value = await showCustomModal({
+                            title: '设置任务提醒',
+                            type: 'prompt',
+                            inputType: 'datetime-local',
+                            initialValue: formatDateTimeLocalInput(todo.remindTime),
+                            message: `当前时间：${formatDateTime(new Date())}`
+                        });
+                        if (!value) return;
+                        const iso = parseDateTimeInput(value);
+                        const due = parseDateTimeToMs(value);
+                        if (!iso || due === null) { showToast('时间格式无效', 'error'); return; }
+                        if (due <= Date.now()) {
+                            showToast('提醒时间需晚于当前时间', 'error');
+                            logReminderEvent('remind_time_invalid', { input: value, due, now: Date.now(), todoId: todo.id });
+                            return;
+                        }
+                        recordState();
+                        todo.remindTime = iso;
+                        todo.remindAt = due;
+                        todo.remindNotified = false;
+                        debouncedSave();
+                        renderTodos();
+                        scheduleNextReminder();
+                        logReminderEvent('remind_time_set', { input: value, due, now: Date.now(), todoId: todo.id });
+                    })();
+                    return;
+                }
             }
         });
 
@@ -5581,7 +5701,7 @@ function createProjectPane(project, workspace) {
                 if (!todo) return;
 
                 if (isSubtask) {
-                    const subtask = todo.subtasks.find(st => st.id == item.dataset.id);
+                    const subtask = todo.subtasks.find(st => st.id == item.dataset.subId);
                     if (subtask) {
                         enterEditMode(textSpan, subtask.text, (newText) => {
                              if (newText && newText !== subtask.text) { recordState(); subtask.text = newText; debouncedSave();} 
@@ -5867,6 +5987,26 @@ function createProjectPane(project, workspace) {
         todoList.addEventListener('dragstart', (e) => {
             const draggedEl = e.target.closest('.todo-item, .sub-task-item');
             if (!draggedEl) return;
+            
+            // 如果正在编辑文本（contentEditable 为 true 或有选中文本），阻止拖动
+            const selection = window.getSelection();
+            if (selection && selection.toString().length > 0) {
+                e.preventDefault();
+                return;
+            }
+            
+            // 检查是否在可编辑元素内
+            if (e.target.isContentEditable || e.target.closest('[contenteditable="true"]')) {
+                e.preventDefault();
+                return;
+            }
+            
+            // 如果点击的是文本区域、复选框或删除按钮，不触发拖动
+            if (e.target.classList.contains('text') || e.target.closest('.text') ||
+                e.target.closest('.toggle') || e.target.closest('.delete-btn')) {
+                e.preventDefault();
+                return;
+            }
             
             // 使用 setTimeout 确保拖动元素的视觉样式在下一帧应用
             setTimeout(() => {
@@ -6824,7 +6964,7 @@ function setupGlobalListeners() {
                 src,
                 position: { top: `${posY}px`, left: `${posX}px` },
                 size: { width: `${size.width}px`, height: `${size.height}px` },
-                zIndex: SHAPE_Z_INDEX_BASE - 1
+                zIndex: highestPhotoZIndex++
             };
             const newPhotoElement = createPhotoPane(currentWorkspace.photos[newPhotoId]);
             if (newPhotoElement) {
@@ -6866,7 +7006,7 @@ function setupGlobalListeners() {
             color: '#4f46e5',
             text: '',
             isBold: false,
-            zIndex: SHAPE_Z_INDEX_BASE - 1
+            zIndex: highestShapeZIndex++
         };
         debouncedSave();
         const newShapeElement = createShapePane(currentWorkspace.shapes[newShapeId]);
@@ -6905,7 +7045,7 @@ function setupGlobalListeners() {
                 symbol,
                 position: { top: `${posY}px`, left: `${posX}px` },
                 size: { width: `${size.width}px`, height: `${size.height}px` },
-                zIndex: SHAPE_Z_INDEX_BASE - list.length + index
+                zIndex: highestEmojiZIndex++
             };
             const newEmojiElement = createEmojiPane(currentWorkspace.emojis[newEmojiId]);
             if (newEmojiElement) {
@@ -6982,7 +7122,7 @@ function setupGlobalListeners() {
         const posY = window.scrollY / currentZoom + (window.innerHeight / 2 / currentZoom) - 45;
         currentWorkspace.folders[newFolderId] = {
             id: newFolderId,
-            name: '新文件夹',
+            name: 'Folder',
             color: '#5ac8fa',
             position: { top: `${posY}px`, left: `${posX}px` },
             items: [],
@@ -7214,6 +7354,7 @@ function setupGlobalListeners() {
             if (!appSettings.emojisEnabled && key === map.emoji) return;
             if (key === map.note) { e.preventDefault(); addNoteBtn.click(); }
             else if (key === map.project) { e.preventDefault(); addProjectBtn.click(); }
+            else if (key === 'f') { e.preventDefault(); addFolderBtn.click(); }
             else if (key === map.shape) {
                 e.preventDefault();
                 showShapeTypeMenu({ x: window.scrollX + window.innerWidth / 2, y: window.scrollY + window.innerHeight / 2 }, (type) => createShapeAt(type));
@@ -7319,11 +7460,12 @@ function setupGlobalListeners() {
         menu.innerHTML = `
             <div class="dropdown-option" data-action="newProject">创建新项目 (Alt+${appSettings.shortcutMap.project.toUpperCase()})</div>
             <div class="dropdown-option" data-action="newNote">创建新便签 (Alt+${appSettings.shortcutMap.note.toUpperCase()})</div>
+            <div class="dropdown-option" data-action="newFolder">创建文件夹 (Alt+F)</div>
             <div class="dropdown-option" data-action="newPhoto">添加图片</div>
             ${shapeOption}
             ${emojiOption}
             <div class="dropdown-divider"></div>
-            <div class="dropdown-option" data-action="refresh">🔄 刷新页面 (F5)</div>
+            <div class="dropdown-option" data-action="refresh">刷新页面 (F5)</div>
             <div class="dropdown-divider"></div>
             <div class="dropdown-option" data-action="toggleAllPanels">${allPanelsText} (Alt+${appSettings.shortcutMap.toggle.toUpperCase()})</div>
             <div class="dropdown-divider"></div>
@@ -7341,6 +7483,7 @@ function setupGlobalListeners() {
             switch (action) {
                 case 'newProject': addProjectBtn.click(); break;
                 case 'newNote': addNoteBtn.click(); break;
+                case 'newFolder': addFolderBtn.click(); break;
                 case 'newShape':
                     showShapeTypeMenu(e, (type) => createShapeAt(type, { x: e.pageX, y: e.pageY }));
                     break;

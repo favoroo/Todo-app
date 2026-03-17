@@ -1086,13 +1086,17 @@ select:focus-visible,
 
 .todo-item .text {
     flex-grow: 1;
-    margin: 0 56px 0 10px; /* Right margin for dot and actions */
+    margin: 0 56px 0 10px;
     cursor: text;
     font-weight: 500;
     font-size: var(--project-font-size);
     transition: color 0.3s ease, text-decoration-color 0.3s ease;
     text-decoration-color: transparent;
     color: var(--proj-text-color);
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
 }
 
 .todo-item .text.is-bold {
@@ -1182,6 +1186,34 @@ select:focus-visible,
 }
 .delete-btn:hover { background-color: var(--proj-border-color); color: var(--delete-color); }
 
+.remind-btn,
+.important-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: var(--proj-secondary-text-color);
+    transition: all 0.2s;
+    border-radius: 50%;
+    margin-right: 2px;
+}
+
+.remind-btn svg,
+.important-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+.remind-btn:hover { background-color: rgba(66, 133, 244, 0.2); color: #4285f4; }
+.important-btn:hover { background-color: rgba(242, 157, 56, 0.2); color: #f29d38; }
+
+.todo-item.important-task .important-btn { color: #f29d38; }
+
 /* Task States */
 .todo-item.completed { opacity: 0.7; }
 .todo-item.completed .text { text-decoration: line-through; color: var(--proj-secondary-text-color); }
@@ -1215,10 +1247,29 @@ select:focus-visible,
     position: relative;
 }
 .sub-task-item:hover { background-color: rgba(var(--proj-text-color-rgb, 0,0,0), 0.05); }
-.sub-task-item .text { font-size: var(--project-font-size); font-weight: 500; }
+.sub-task-item .text { 
+    font-size: var(--project-font-size); 
+    font-weight: 500;
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
+}
 .sub-task-item .toggle { width: 16px; height: 16px; }
 .sub-task-item .toggle svg { width: 10px; height: 10px; }
 .sub-task-item .actions { top: 50%; transform: translateY(-50%); }
+
+.sub-task-item .remind-btn,
+.sub-task-item .important-btn {
+    width: 20px;
+    height: 20px;
+}
+
+.sub-task-item .remind-btn svg,
+.sub-task-item .important-btn svg {
+    width: 12px;
+    height: 12px;
+}
 
 .sub-task-item.completed { opacity: 0.7; }
 .sub-task-item.completed .text { text-decoration: line-through; color: var(--proj-secondary-text-color); }
@@ -2173,80 +2224,98 @@ html[data-theme="light"] { scrollbar-color: rgba(0, 0, 0, 0.3) transparent; }
 }
 
 .folder-icon {
-    width: 56px;
-    height: 56px;
-    border-radius: 16px; /* 更圆润，符合现代审美 */
+    position: relative;
+    width: 72px;
+    height: 72px;
+    border-radius: 18px;
     background-color: var(--folder-color, #5ac8fa);
-    /* 采用更柔和的微渐变和高光 */
     background-image: linear-gradient(135deg, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0) 60%, rgba(0,0,0,0.05) 100%);
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
+    padding: 8px 4px 4px 4px;
     box-shadow: 
         0 4px 12px rgba(0, 0, 0, 0.12),
         inset 0 1px 1px rgba(255, 255, 255, 0.3);
     transition: all 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    overflow: hidden;
 }
 
 .folder-icon .material-symbols-rounded {
-    font-size: 30px; /* 稍微缩小图标，比例更精致 */
-    color: white;
+    font-size: 36px;
+    color: var(--folder-icon-color, white);
     font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    transition: transform 0.2s ease, opacity 0.2s ease, color 0.2s ease;
+    margin-top: 4px;
 }
 
-/* 文件夹 emoji 图标样式 */
 .folder-emoji-icon {
-    font-size: 32px;
+    font-size: 38px;
     line-height: 1;
     display: flex;
     align-items: center;
     justify-content: center;
     filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+    transition: transform 0.2s ease, opacity 0.2s ease;
 }
 
-/* 当有 emoji 图标时隐藏默认图标 */
 .folder-icon:has(.folder-emoji-icon:not(:empty)) .folder-default-icon {
     display: none;
 }
 
-.folder-name {
-    margin-top: 4px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--primary-text-color);
+.folder-icon-text {
+    position: absolute;
+    bottom: 4px;
+    left: 4px;
+    right: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--folder-text-color, white);
     text-align: center;
-    max-width: 76px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    padding: 2px 4px;
-    border-radius: 4px;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    z-index: 2;
+    pointer-events: none;
     outline: none;
 }
 
-.folder-name:focus {
-    background: var(--surface-2);
-    white-space: normal;
-    word-break: break-all;
+.folder-icon-text:focus {
+    pointer-events: auto;
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 4px;
+}
+
+.folder-icon:has(.folder-icon-text:not(:empty)) .folder-default-icon,
+.folder-icon:has(.folder-icon-text:not(:empty)) .folder-emoji-icon {
+    transform: none;
+    opacity: 1;
+}
+
+.folder-name {
+    display: none;
 }
 
 .folder-badge {
     position: absolute;
-    top: -4px;
-    right: 4px;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 9px;
+    top: 2px;
+    right: 2px;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 10px;
     background: var(--accent-color);
     color: white;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     font-weight: 700;
     display: flex;
     align-items: center;
     justify-content: center;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    z-index: 3;
 }
 
 .folder-badge:empty,
