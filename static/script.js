@@ -8,18 +8,115 @@ function dataURLtoBlob(dataurl) {
     return new Blob([u8arr], {type:mime});
 }
 
+// +++++ 将非 PNG Blob 通过 Canvas 转为 PNG +++++
+function convertBlobToPng(blob, imgSrc) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            const c = document.createElement('canvas');
+            c.width = img.naturalWidth;
+            c.height = img.naturalHeight;
+            c.getContext('2d').drawImage(img, 0, 0);
+            c.toBlob(p => p ? resolve(p) : reject(new Error('toBlob failed')), 'image/png');
+            if (!imgSrc.startsWith('data:')) URL.revokeObjectURL(img.src);
+        };
+        img.onerror = () => reject(new Error('Image load failed'));
+        img.src = imgSrc.startsWith('data:') ? imgSrc : URL.createObjectURL(blob);
+    });
+}
+
+// +++++ 复制图片到剪贴板 +++++
+// reason: 'clipboard' | 'not-secure-context' | 'unsupported' | 'not-allowed' | 'error'
+async function copyPhotoToClipboard(src) {
+    if (!navigator.clipboard?.write || !window.ClipboardItem) {
+        return { success: false, reason: 'unsupported' };
+    }
+    if (!window.isSecureContext) {
+        return { success: false, reason: 'not-secure-context' };
+    }
+
+    const makePngBlob = async () => {
+        const rawBlob = src.startsWith('data:')
+            ? dataURLtoBlob(src)
+            : await (await fetch(src)).blob();
+        return rawBlob.type === 'image/png' ? rawBlob : convertBlobToPng(rawBlob, src);
+    };
+
+    try {
+        // Pass a Promise<Blob> into ClipboardItem so clipboard.write() fires
+        // synchronously within the user gesture, preserving transient activation.
+        try {
+            await navigator.clipboard.write([
+                new ClipboardItem({ 'image/png': makePngBlob() })
+            ]);
+            return { success: true, reason: 'clipboard' };
+        } catch (first) {
+            if (first instanceof TypeError) {
+                // Older browser without Promise-value support — resolve then write
+                const png = await makePngBlob();
+                await navigator.clipboard.write([
+                    new ClipboardItem({ 'image/png': png })
+                ]);
+                return { success: true, reason: 'clipboard' };
+            }
+            throw first;
+        }
+    } catch (err) {
+        console.warn('copyPhotoToClipboard:', err);
+        return { success: false, reason: err.name === 'NotAllowedError' ? 'not-allowed' : 'error', error: err };
+    }
+}
+
+// +++++ 下载图片 +++++
+function downloadImage(dataUrl, filename = 'image.png') {
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+/** 复制图片到系统剪贴板：统一成功 Toast / 失败弹窗可下载（浮动图右键、便签内图、仅选中浮动图时的 Ctrl+C 共用） */
+function copyPhotoWithFeedback(src, options = {}) {
+    const multiFirst = Boolean(options.multiFirst);
+    const hints = {
+        'not-secure-context': '当前为非安全上下文（需 HTTPS 或 localhost），浏览器禁止写入剪贴板。',
+        'not-allowed': '浏览器拒绝了剪贴板写入权限，请检查权限设置或改用下载。',
+        'unsupported': '当前浏览器不支持 Clipboard API，请改用下载。',
+    };
+    return copyPhotoToClipboard(src).then(result => {
+        if (result.success) {
+            lastWorkspaceCopyKind = 'photo';
+            showToast(multiFirst ? '已复制首张图片到剪贴板' : '已复制图片到剪贴板', 'success');
+            return;
+        }
+        showCustomModal({
+            title: '复制图片失败',
+            message: (hints[result.reason] || '复制时发生未知错误。') + '<br><br>您可以点击下方按钮将图片下载到本地。',
+            okText: '下载图片',
+            cancelText: '取消'
+        }).then(ok => {
+            if (ok) {
+                downloadImage(src, `image_${Date.now()}.png`);
+                showToast('图片已下载', 'success');
+            }
+        }).catch(() => {});
+    });
+}
+
 // Global state
 let workspaces = [];
 let currentWorkspaceIndex = 0;
 let highestZIndex = 1;
-let highestShapeZIndex = 10000;
-const SHAPE_Z_INDEX_BASE = 10000;
-let highestEmojiZIndex = 10000;
+let highestFolderZIndex = 10000;
+const FOLDER_Z_INDEX_BASE = 10000;
+let highestShapeZIndex = 9000;
+const SHAPE_Z_INDEX_BASE = 9000;
+let highestEmojiZIndex = 9000;
 const EMOJI_Z_INDEX_BASE = SHAPE_Z_INDEX_BASE;
-let highestPhotoZIndex = 10000;
+let highestPhotoZIndex = 9000;
 const PHOTO_Z_INDEX_BASE = SHAPE_Z_INDEX_BASE;
-let highestFolderZIndex = 8000;
-const FOLDER_Z_INDEX_BASE = 8000;
 let openFolderPanel = null; // 当前打开的文件夹面板
 let draggedTaskInfo = null;
 let isSwitcherVisible = false;
@@ -131,6 +228,8 @@ let lastBodyWidth = 0;
 let lastBodyHeight = 0;
 const prefersReducedMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : { matches: false };
 let windowClipboard = null;
+/** 应用内最近一次与工作区相关的复制：'windows'=复制了窗口元素；'photo'=复制了图片到系统剪贴板；'none' */
+let lastWorkspaceCopyKind = 'none';
 let pasteCount = 0;
 let resizeLogTimer = null;
 let resizeStart = 0;
@@ -396,7 +495,16 @@ const copySelectedWindows = () => {
     }
     windowClipboard = items;
     pasteCount = 0;
+    lastWorkspaceCopyKind = 'windows';
     showToast(`已复制 ${items.length} 个窗口`, 'success');
+    // 尽量用纯文本覆盖系统剪贴板，避免仍保留「上一张图片」导致粘贴时误判为贴图
+    (async () => {
+        try {
+            if (navigator.clipboard?.writeText && window.isSecureContext) {
+                await navigator.clipboard.writeText('\u200b');
+            }
+        } catch (_) { /* 忽略：无权限时由 lastWorkspaceCopyKind + paste 顺序兜底 */ }
+    })();
 };
 
 const pasteClipboardWindows = () => {
@@ -527,6 +635,123 @@ const normalizeLayerAll = () => {
     highestShapeZIndex = base + sorted.length + 1;
     highestEmojiZIndex = base + sorted.length + 1;
     highestPhotoZIndex = base + sorted.length + 1;
+};
+
+/**
+ * Alt+拖动：克隆当前选中的窗口（项目/便签/形状/表情/图片/文件夹），位置与原元素重合，返回新 DOM 列表及与 primarySourceElement 对应的副本。
+ * 文件夹副本的 items 为空（避免与原件共用条目引用）。
+ */
+function duplicateWorkspaceWindowsFromElements(sources, primarySourceElement) {
+    const currentWorkspace = workspaces[currentWorkspaceIndex];
+    if (!currentWorkspace || !sources.length) return null;
+
+    const stamp = Date.now();
+    const newElements = [];
+    const sourceToNew = new Map();
+    const groupMap = new Map();
+    let layerZ = getMaxLayerZAll() + 1;
+
+    const newIdForType = (type, i) => {
+        const r = Math.random().toString(36).slice(2, 8);
+        const b = `${stamp}_${i}`;
+        if (type === 'project') return `proj_${b}_${r}`;
+        if (type === 'note') return `note_${b}_${r}`;
+        if (type === 'shape') return `shape_${b}_${r}`;
+        if (type === 'emoji') return `emoji_${b}_${r}`;
+        if (type === 'photo') return `photo_${b}_${r}`;
+        if (type === 'folder') return `folder_${b}_${r}`;
+        return `win_${b}_${r}`;
+    };
+
+    sources.forEach((el, i) => {
+        if (!el || !el.isConnected) return;
+        const type = getWindowType(el);
+        if (!type) return;
+        const raw = getWindowDataByElement(el);
+        if (!raw) return;
+        const data = cloneData(raw);
+        const newId = newIdForType(type, i);
+        data.id = newId;
+        if (data.groupId) {
+            if (!groupMap.has(data.groupId)) {
+                groupMap.set(data.groupId, `grp_${stamp}_${i}_${Math.random().toString(36).slice(2, 6)}`);
+            }
+            data.groupId = groupMap.get(data.groupId);
+        }
+
+        let dom = null;
+        if (type === 'project') {
+            data.zIndex = highestZIndex++;
+            currentWorkspace.projects[newId] = data;
+            dom = createProjectPane(data, currentWorkspace);
+        } else if (type === 'note') {
+            data.zIndex = highestZIndex++;
+            currentWorkspace.notes[newId] = data;
+            dom = createNotePane(data);
+        } else if (type === 'shape') {
+            data.zIndex = layerZ++;
+            currentWorkspace.shapes ??= {};
+            currentWorkspace.shapes[newId] = data;
+            dom = createShapePane(data);
+        } else if (type === 'emoji') {
+            data.zIndex = layerZ++;
+            currentWorkspace.emojis ??= {};
+            currentWorkspace.emojis[newId] = data;
+            dom = createEmojiPane(data);
+        } else if (type === 'photo') {
+            data.zIndex = layerZ++;
+            currentWorkspace.photos ??= {};
+            currentWorkspace.photos[newId] = data;
+            dom = createPhotoPane(data);
+        } else if (type === 'folder') {
+            data.items = [];
+            data.zIndex = highestFolderZIndex++;
+            currentWorkspace.folders ??= {};
+            currentWorkspace.folders[newId] = data;
+            dom = createFolderPane(data);
+        }
+        if (dom) {
+            dom.style.zIndex = data.zIndex;
+            newElements.push(dom);
+            sourceToNew.set(el, dom);
+        }
+    });
+
+    if (newElements.length === 0) return null;
+
+    const primaryDuplicate = sourceToNew.get(primarySourceElement) || newElements[0];
+    normalizeLayerAll();
+    debouncedSave();
+    checkEmptyState(currentWorkspace);
+    return { newElements, primaryDuplicate };
+}
+
+const normalizeProjectNoteZIndex = () => {
+    const currentWorkspace = workspaces[currentWorkspaceIndex];
+    if (!currentWorkspace) return;
+    
+    const items = [
+        ...Object.values(currentWorkspace.projects || {}).map(p => ({ type: 'project', data: p })),
+        ...Object.values(currentWorkspace.notes || {}).map(n => ({ type: 'note', data: n }))
+    ];
+    
+    if (items.length === 0) {
+        highestZIndex = 1;
+        return;
+    }
+    
+    items.sort((a, b) => (a.data.zIndex || 0) - (b.data.zIndex || 0));
+    
+    items.forEach((item, idx) => {
+        const newZ = idx + 1;
+        item.data.zIndex = newZ;
+        const el = item.type === 'project' 
+            ? document.querySelector(`[data-project-id="${item.data.id}"]`)
+            : document.querySelector(`[data-note-id="${item.data.id}"]`);
+        if (el) el.style.zIndex = newZ;
+    });
+    
+    highestZIndex = items.length + 1;
 };
 
 const moveSelectionInLayer = (type, action) => {
@@ -1167,6 +1392,7 @@ function positionContextMenuAt(menu, pageX, pageY) {
 
 const SHAPE_TYPES = [
     { id: 'rect', label: '矩形' },
+    { id: 'rect-outline', label: '方框' },
     { id: 'circle', label: '圆形' },
     { id: 'triangle', label: '三角形' },
     { id: 'star', label: '五角星' },
@@ -1654,7 +1880,8 @@ const updateEmojiSize = (container) => {
     const width = container.offsetWidth || 0;
     const height = container.offsetHeight || 0;
     const base = Math.min(width, height);
-    const size = Math.max(12, Math.min(120, Math.round(base * 0.75)));
+    // 字号随容器同步缩放，与四角缩放手柄、选中框使用同一矩形（不再单独上限 120px）
+    const size = Math.max(16, Math.min(512, Math.round(base * 0.88)));
     emojiEl.style.fontSize = `${size}px`;
 };
 
@@ -1688,14 +1915,25 @@ const showShapeTypeMenu = (eventOrPoint, onSelect) => {
     });
 };
 
-const updateShapeTextSize = (container) => {
+const SHAPE_FONT_SIZES = [12, 14, 16, 18, 20, 24];
+const DEFAULT_SHAPE_FONT_SIZE = 16;
+
+const updateShapeTextStyle = (container) => {
     const textEl = container.querySelector('.shape-text');
     if (!textEl) return;
-    const width = container.offsetWidth || 0;
-    const height = container.offsetHeight || 0;
-    const base = Math.min(width, height);
-    const size = Math.max(10, Math.min(64, Math.round(base * 0.22)));
-    textEl.style.fontSize = `${size}px`;
+    const shapeId = container.dataset.shapeId;
+    const shape = workspaces[currentWorkspaceIndex]?.shapes?.[shapeId];
+    const fontSize = (shape && shape.fontSize != null) ? shape.fontSize : DEFAULT_SHAPE_FONT_SIZE;
+    textEl.style.fontSize = `${fontSize}px`;
+    if (!shape) return;
+    const h = shape.textAlignH || 'center';
+    const v = shape.textAlignV || 'middle';
+    textEl.classList.remove('align-h-left', 'align-h-center', 'align-h-right', 'align-v-top', 'align-v-middle', 'align-v-bottom');
+    textEl.classList.add(`align-h-${h}`, `align-v-${v}`);
+};
+
+const updateShapeTextSize = (container) => {
+    updateShapeTextStyle(container);
 };
 
 function updateBodySizeForZoom() {
@@ -2839,6 +3077,62 @@ function makeDraggableAndResizable(element, itemData) {
     const startDrag = (e) => {
         if (e.target.classList.contains('resizer') || e.target.isContentEditable || e.target.closest('button, input')) return;
         if (e.ctrlKey || e.shiftKey) return;
+
+        if (!selectedWindows.has(element)) {
+            clearWindowSelection();
+            selectWindowWithGroup(element);
+        } else {
+            expandSelectionByGroups();
+        }
+
+        const targets = Array.from(selectedWindows).filter(el => {
+            if (!el.isConnected) {
+                selectedWindows.delete(el);
+                return false;
+            }
+            return true;
+        });
+
+        // Alt + 拖动：生成副本并拖动副本，原件保持不动
+        if (e.altKey) {
+            e.preventDefault();
+            allowSameStateOnce = true;
+            recordState();
+            actionStateCaptured = true;
+            const dupResult = duplicateWorkspaceWindowsFromElements(targets, element);
+            if (!dupResult || !dupResult.newElements.length) {
+                actionStateCaptured = false;
+                return;
+            }
+            clearWindowSelection();
+            dupResult.newElements.forEach(selectWindow);
+            const primaryDuplicate = dupResult.primaryDuplicate;
+            isDragging = true;
+            isWindowDragActive = true;
+            logUiEvent('window_move_start', {
+                type: getWindowType(primaryDuplicate),
+                id: primaryDuplicate.dataset.projectId || primaryDuplicate.dataset.noteId || primaryDuplicate.dataset.shapeId || primaryDuplicate.dataset.emojiId || primaryDuplicate.dataset.photoId || primaryDuplicate.dataset.folderId,
+                left: primaryDuplicate.style.left,
+                top: primaryDuplicate.style.top,
+                undoStack: undoStack.length,
+                redoStack: redoStack.length
+            });
+            dragGroup = dupResult.newElements.map(el => ({
+                element: el,
+                startLeft: el.offsetLeft,
+                startTop: el.offsetTop,
+                data: getWindowDataByElement(el)
+            }));
+            primaryStartLeft = primaryDuplicate.offsetLeft;
+            primaryStartTop = primaryDuplicate.offsetTop;
+            offsetX = e.pageX / currentZoom - primaryDuplicate.offsetLeft;
+            offsetY = e.pageY / currentZoom - primaryDuplicate.offsetTop;
+            dragGroup.forEach(({ element: el }) => el.classList.add('dragging'));
+            document.addEventListener('mousemove', handleMove);
+            document.addEventListener('mouseup', handleMouseUp);
+            return;
+        }
+
         isDragging = true;
         isWindowDragActive = true;
         if (!actionStateCaptured) {
@@ -2855,20 +3149,6 @@ function makeDraggableAndResizable(element, itemData) {
             });
         }
 
-        if (!selectedWindows.has(element)) {
-            clearWindowSelection();
-            selectWindowWithGroup(element);
-        } else {
-            expandSelectionByGroups();
-        }
-
-        const targets = Array.from(selectedWindows).filter(el => {
-            if (!el.isConnected) {
-                selectedWindows.delete(el);
-                return false;
-            }
-            return true;
-        });
         dragGroup = targets.map(el => ({
             element: el,
             startLeft: el.offsetLeft,
@@ -2923,10 +3203,64 @@ function makeDraggableAndResizable(element, itemData) {
 
 // static/script.js
 
+const RECT_OUTLINE_VIEWBOX = 100;
+const RECT_OUTLINE_RADIUS_PX = 10; // 目标屏幕像素圆角
+
+function updateRectOutlineRadius(container) {
+    const shapeBody = container.querySelector('.shape-body.shape-rect-outline');
+    const rect = shapeBody?.querySelector('.shape-outline-rect');
+    if (!rect) return;
+    const w = container.offsetWidth || 1;
+    const h = container.offsetHeight || 1;
+    const maxRx = 46;
+    const maxRy = 46;
+    const rx = Math.min(maxRx, (RECT_OUTLINE_RADIUS_PX * RECT_OUTLINE_VIEWBOX) / w);
+    const ry = Math.min(maxRy, (RECT_OUTLINE_RADIUS_PX * RECT_OUTLINE_VIEWBOX) / h);
+    rect.setAttribute('rx', String(rx));
+    rect.setAttribute('ry', String(ry));
+}
+
 function applyShapeTypeClass(shapeBody, type) {
     SHAPE_TYPES.forEach(t => shapeBody.classList.remove(`shape-${t.id}`));
     shapeBody.classList.add(`shape-${type}`);
     shapeBody.dataset.shapeType = type;
+    const container = shapeBody.closest('.shape-container');
+    if (!container) return;
+    container.classList.toggle('shape-outline-mode', type === 'rect-outline');
+    if (type !== 'rect-outline') {
+        if (container._rectOutlineResizeObserver) {
+            container._rectOutlineResizeObserver.disconnect();
+            container._rectOutlineResizeObserver = null;
+        }
+        shapeBody.replaceChildren();
+        return;
+    }
+    shapeBody.replaceChildren();
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.classList.add('shape-outline-svg');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.setAttribute('aria-hidden', 'true');
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.classList.add('shape-outline-rect');
+    rect.setAttribute('x', '4');
+    rect.setAttribute('y', '4');
+    rect.setAttribute('width', '92');
+    rect.setAttribute('height', '92');
+    rect.setAttribute('rx', '10');
+    rect.setAttribute('ry', '10');
+    rect.setAttribute('fill', 'none');
+    rect.setAttribute('stroke', 'currentColor');
+    rect.setAttribute('stroke-width', '4');
+    rect.setAttribute('vector-effect', 'non-scaling-stroke');
+    svg.appendChild(rect);
+    shapeBody.appendChild(svg);
+    requestAnimationFrame(() => updateRectOutlineRadius(container));
+    if (!container._rectOutlineResizeObserver) {
+        container._rectOutlineResizeObserver = new ResizeObserver(() => updateRectOutlineRadius(container));
+        container._rectOutlineResizeObserver.observe(container);
+    }
 }
 
 function createEmojiPane(emoji) {
@@ -3077,34 +3411,25 @@ function createPhotoPane(photo) {
         const menu = document.createElement('div');
         menu.className = 'custom-dropdown-menu';
         const groupMenuHTML = buildGroupMenuHTML();
-        const folderMenuHTML = buildFolderMenuOptions(photo.id, 'photo');
-        const layerMenuHTML = `
-            <div class="dropdown-divider"></div>
-            <div class="dropdown-option" data-action="layerUp">上移一级 (Ctrl+])</div>
-            <div class="dropdown-option" data-action="layerDown">下移一级 (Ctrl+[)</div>
-            <div class="dropdown-option" data-action="layerTop">显示到顶部 (Ctrl+Shift+])</div>
-            <div class="dropdown-option" data-action="layerBottom">显示到底层 (Ctrl+Shift+[)</div>
-        `;
-        menu.innerHTML = `<div class="dropdown-option" data-action="crop">裁剪图片</div>${folderMenuHTML}${groupMenuHTML}${layerMenuHTML}<div class="dropdown-divider"></div><div class="dropdown-option danger" data-action="delete">删除图片</div>`;
-        positionContextMenu(menu, e);
-        menu.addEventListener('click', me => {
-            const action = me.target.dataset.action;
-            if (action === 'crop') {
-                closeAllDropdowns();
-                openPhotoCropper(photo, container);
-            } else if (action === 'delete') {
-                closeAllDropdowns();
-                if (selectedWindows.size > 1 && selectedWindows.has(container)) {
-                    deleteSelectedWindows();
-                } else {
-                    deletePhotoAction();
-                }
-            } else if (action === 'addToFolder') {
-                closeAllDropdowns();
-                const folderId = me.target.dataset.folderId;
+        const hasFoldersPhoto = workspaces[currentWorkspaceIndex]?.folders && Object.keys(workspaces[currentWorkspaceIndex].folders).length > 0;
+        const folderSubmenuOptionPhoto = hasFoldersPhoto ? `<div class="dropdown-option dropdown-option-has-sub" data-action="openFolderSubmenu">移到文件夹 <span class="dropdown-sub-arrow">▶</span></div>` : '';
+        const openFolderSubmenuPhoto = () => {
+            const folderOptionsHTML = buildFolderMenuOptions(photo.id, 'photo').replace(/^<div class="dropdown-divider"><\/div>/, '');
+            if (!folderOptionsHTML) return;
+            const subMenu = document.createElement('div');
+            subMenu.className = 'custom-dropdown-menu';
+            subMenu.innerHTML = folderOptionsHTML;
+            document.body.appendChild(subMenu);
+            const rect = menu.getBoundingClientRect();
+            subMenu.style.top = `${rect.top + window.scrollY}px`;
+            subMenu.style.left = `${rect.right + window.scrollX + 4}px`;
+            requestAnimationFrame(() => subMenu.classList.add('visible'));
+            subMenu.addEventListener('click', sme => {
+                const opt = sme.target.closest('.dropdown-option');
+                if (!opt || opt.dataset.action !== 'addToFolder') return;
+                const folderId = opt.dataset.folderId;
                 if (folderId) {
-                    const currentWorkspace = workspaces[currentWorkspaceIndex];
-                    const folder = currentWorkspace.folders?.[folderId];
+                    const folder = workspaces[currentWorkspaceIndex]?.folders?.[folderId];
                     if (folder) {
                         const existingIndex = folder.items.findIndex(item => item.id === photo.id && item.type === 'photo');
                         if (existingIndex >= 0) {
@@ -3119,6 +3444,62 @@ function createPhotoPane(photo) {
                             showToast(`已添加到 "${folder.name}"`, 'success');
                         }
                     }
+                }
+                closeAllDropdowns();
+            });
+            return subMenu;
+        };
+        const layerMenuHTML = `
+            <div class="dropdown-divider"></div>
+            <div class="dropdown-option" data-action="layerUp">上移一级 (Ctrl+])</div>
+            <div class="dropdown-option" data-action="layerDown">下移一级 (Ctrl+[)</div>
+            <div class="dropdown-option" data-action="layerTop">显示到顶部 (Ctrl+Shift+])</div>
+            <div class="dropdown-option" data-action="layerBottom">显示到底层 (Ctrl+Shift+[)</div>
+        `;
+        menu.innerHTML = `<div class="dropdown-option" data-action="copy">复制图片</div><div class="dropdown-option" data-action="download">下载图片</div><div class="dropdown-option" data-action="open">在新窗口打开</div><div class="dropdown-option" data-action="crop">裁剪图片</div>${folderSubmenuOptionPhoto}${groupMenuHTML}${layerMenuHTML}<div class="dropdown-divider"></div><div class="dropdown-option danger" data-action="delete">删除图片</div>`;
+        positionContextMenu(menu, e);
+        if (hasFoldersPhoto) {
+            let photoFolderSubTimer = null, photoFolderSub = null;
+            const folderOpt = menu.querySelector('[data-action="openFolderSubmenu"]');
+            if (folderOpt) {
+                folderOpt.addEventListener('mouseenter', () => {
+                    clearTimeout(photoFolderSubTimer);
+                    if (photoFolderSub) { photoFolderSub.remove(); photoFolderSub = null; }
+                    photoFolderSub = openFolderSubmenuPhoto();
+                    if (photoFolderSub) {
+                        photoFolderSub.addEventListener('mouseenter', () => clearTimeout(photoFolderSubTimer));
+                        photoFolderSub.addEventListener('mouseleave', () => {
+                            photoFolderSubTimer = setTimeout(() => { photoFolderSub?.remove(); photoFolderSub = null; }, 150);
+                        });
+                    }
+                });
+                folderOpt.addEventListener('mouseleave', () => {
+                    photoFolderSubTimer = setTimeout(() => { photoFolderSub?.remove(); photoFolderSub = null; }, 150);
+                });
+            }
+        }
+        menu.addEventListener('click', me => {
+            const action = me.target.dataset.action;
+            if (action === 'openFolderSubmenu') return;
+            if (action === 'copy') {
+                closeAllDropdowns();
+                copyPhotoWithFeedback(photo.src);
+            } else if (action === 'download') {
+                closeAllDropdowns();
+                downloadImage(photo.src, `image_${Date.now()}.png`);
+                showToast('图片已下载', 'success');
+            } else if (action === 'open') {
+                closeAllDropdowns();
+                window.open(photo.src, '_blank');
+            } else if (action === 'crop') {
+                closeAllDropdowns();
+                openPhotoCropper(photo, container);
+            } else if (action === 'delete') {
+                closeAllDropdowns();
+                if (selectedWindows.size > 1 && selectedWindows.has(container)) {
+                    deleteSelectedWindows();
+                } else {
+                    deletePhotoAction();
                 }
             } else if (action === 'group') {
                 closeAllDropdowns();
@@ -3159,6 +3540,9 @@ function createShapePane(shape) {
     shape.color ||= '#4f46e5';
     shape.text ??= '';
     shape.isBold ??= false;
+    shape.textAlignH ??= 'center';
+    shape.textAlignV ??= 'middle';
+    shape.fontSize ??= DEFAULT_SHAPE_FONT_SIZE;
 
     container.dataset.shapeId = shape.id;
     container.style.top = shape.position.top;
@@ -3169,7 +3553,7 @@ function createShapePane(shape) {
     applyShapeTypeClass(shapeBody, shape.type);
     shapeTextInner.textContent = shape.text;
     shapeText.classList.toggle('is-bold', shape.isBold);
-    updateShapeTextSize(container);
+    updateShapeTextStyle(container);
 
     const deleteShapeAction = () => {
         recordState();
@@ -3245,10 +3629,6 @@ function createShapePane(shape) {
         closeAllDropdowns();
         const menu = document.createElement('div');
         menu.className = 'custom-dropdown-menu';
-        const typeOptions = SHAPE_TYPES.map(t => 
-            `<div class="dropdown-option ${shape.type === t.id ? 'selected' : ''}" data-action="type" data-shape="${t.id}">${t.label}</div>`
-        ).join('');
-        const boldLabel = shape.isBold ? '取消加粗' : '加粗';
         const groupMenuHTML = buildGroupMenuHTML();
         const layerMenuHTML = `
             <div class="dropdown-divider"></div>
@@ -3257,25 +3637,120 @@ function createShapePane(shape) {
             <div class="dropdown-option" data-action="layerTop">显示到顶部 (Ctrl+Shift+])</div>
             <div class="dropdown-option" data-action="layerBottom">显示到底层 (Ctrl+Shift+[)</div>
         `;
-        menu.innerHTML = `<div class="dropdown-option" data-action="editText">编辑文本</div><div class="dropdown-option" data-action="toggleBold">${boldLabel}</div><div class="dropdown-divider"></div><div class="dropdown-option" data-action="color">更改颜色</div><div class="dropdown-divider"></div>${typeOptions}${groupMenuHTML}${layerMenuHTML}<div class="dropdown-divider"></div><div class="dropdown-option danger" data-action="delete">删除形状</div>`;
+        const refreshShapeTypeSubmenuContent = (subMenuEl) => {
+            subMenuEl.innerHTML = SHAPE_TYPES.map(t =>
+                `<div class="dropdown-option ${shape.type === t.id ? 'selected' : ''}" data-action="type" data-shape="${t.id}">${t.label}</div>`
+            ).join('');
+        };
+        const openShapeTypeSubmenu = () => {
+            const subMenu = document.createElement('div');
+            subMenu.className = 'custom-dropdown-menu';
+            refreshShapeTypeSubmenuContent(subMenu);
+            document.body.appendChild(subMenu);
+            const rect = menu.getBoundingClientRect();
+            subMenu.style.top = `${rect.top + window.scrollY}px`;
+            subMenu.style.left = `${rect.right + window.scrollX + 4}px`;
+            requestAnimationFrame(() => subMenu.classList.add('visible'));
+            subMenu.addEventListener('click', sme => {
+                const opt = sme.target.closest('.dropdown-option');
+                if (!opt) return;
+                const typeId = opt.dataset.shape;
+                if (!typeId || opt.dataset.action !== 'type') return;
+                sme.stopPropagation();
+                changeShapeType(typeId);
+                refreshShapeTypeSubmenuContent(subMenu);
+            });
+            return subMenu;
+        };
+        const refreshTextSubmenuContent = (subMenuEl) => {
+            const boldLabel = shape.isBold ? '取消加粗' : '加粗';
+            const alignH = shape.textAlignH || 'center';
+            const alignV = shape.textAlignV || 'middle';
+            const alignHOptions = ['left', 'center', 'right'].map(h => ({
+                h, label: { left: '左对齐', center: '水平居中', right: '右对齐' }[h]
+            })).map(o => `<div class="dropdown-option ${alignH === o.h ? 'selected' : ''}" data-action="align" data-align-h="${o.h}">${o.label}</div>`).join('');
+            const alignVOptions = ['top', 'middle', 'bottom'].map(v => ({
+                v, label: { top: '顶部对齐', middle: '垂直居中', bottom: '底部对齐' }[v]
+            })).map(o => `<div class="dropdown-option ${alignV === o.v ? 'selected' : ''}" data-action="align" data-align-v="${o.v}">${o.label}</div>`).join('');
+            const fontSizeOptions = SHAPE_FONT_SIZES.map(sz => `<div class="dropdown-option ${shape.fontSize === sz ? 'selected' : ''}" data-action="fontSize" data-size="${sz}">${sz}px</div>`).join('');
+            subMenuEl.innerHTML = `<div class="dropdown-option" data-action="editText">编辑文本</div><div class="dropdown-option" data-action="toggleBold">${boldLabel}</div><div class="dropdown-divider"></div><div class="dropdown-option dropdown-label">水平对齐</div>${alignHOptions}<div class="dropdown-divider"></div><div class="dropdown-option dropdown-label">垂直对齐</div>${alignVOptions}<div class="dropdown-divider"></div><div class="dropdown-option dropdown-label">字号</div>${fontSizeOptions}`;
+        };
+        const openTextSubmenu = () => {
+            const subMenu = document.createElement('div');
+            subMenu.className = 'custom-dropdown-menu';
+            refreshTextSubmenuContent(subMenu);
+            document.body.appendChild(subMenu);
+            const rect = menu.getBoundingClientRect();
+            subMenu.style.top = `${rect.top + window.scrollY}px`;
+            subMenu.style.left = `${rect.right + window.scrollX + 4}px`;
+            requestAnimationFrame(() => subMenu.classList.add('visible'));
+            subMenu.addEventListener('click', sme => {
+                const opt = sme.target.closest('.dropdown-option');
+                if (!opt || opt.classList.contains('dropdown-label')) return;
+                const action = opt.dataset.action;
+                if (action === 'editText') {
+                    closeAllDropdowns();
+                    enterTextEdit();
+                } else if (action === 'toggleBold') {
+                    sme.stopPropagation();
+                    recordState();
+                    shape.isBold = !shape.isBold;
+                    shapeText.classList.toggle('is-bold', shape.isBold);
+                    debouncedSave();
+                    refreshTextSubmenuContent(subMenu);
+                } else if (action === 'align') {
+                    sme.stopPropagation();
+                    const h = opt.dataset.alignH;
+                    const v = opt.dataset.alignV;
+                    if (h || v) {
+                        recordState();
+                        if (h) shape.textAlignH = h;
+                        if (v) shape.textAlignV = v;
+                        updateShapeTextStyle(container);
+                        debouncedSave();
+                        refreshTextSubmenuContent(subMenu);
+                    }
+                } else if (action === 'fontSize' && opt.dataset.size) {
+                    sme.stopPropagation();
+                    recordState();
+                    shape.fontSize = parseInt(opt.dataset.size, 10);
+                    updateShapeTextStyle(container);
+                    debouncedSave();
+                    refreshTextSubmenuContent(subMenu);
+                }
+            });
+            return subMenu;
+        };
+        menu.innerHTML = `<div class="dropdown-option dropdown-option-has-sub" data-action="openTextSubmenu">文字 <span class="dropdown-sub-arrow">▶</span></div><div class="dropdown-divider"></div><div class="dropdown-option" data-action="color">更改颜色</div><div class="dropdown-divider"></div><div class="dropdown-option dropdown-option-has-sub" data-action="openShapeTypeSubmenu">图形类型 <span class="dropdown-sub-arrow">▶</span></div>${groupMenuHTML}${layerMenuHTML}<div class="dropdown-divider"></div><div class="dropdown-option danger" data-action="delete">删除形状</div>`;
         positionContextMenu(menu, e);
+        let shapeSubmenuTimer = null, shapeSubmenuOpen = null;
+        const bindShapeSubmenuHover = (opt, openFn) => {
+            opt.addEventListener('mouseenter', () => {
+                clearTimeout(shapeSubmenuTimer);
+                if (shapeSubmenuOpen) { shapeSubmenuOpen.remove(); shapeSubmenuOpen = null; }
+                shapeSubmenuOpen = openFn();
+                if (shapeSubmenuOpen) {
+                    shapeSubmenuOpen.addEventListener('mouseenter', () => clearTimeout(shapeSubmenuTimer));
+                    shapeSubmenuOpen.addEventListener('mouseleave', () => {
+                        shapeSubmenuTimer = setTimeout(() => { shapeSubmenuOpen?.remove(); shapeSubmenuOpen = null; }, 150);
+                    });
+                }
+            });
+            opt.addEventListener('mouseleave', () => {
+                shapeSubmenuTimer = setTimeout(() => { shapeSubmenuOpen?.remove(); shapeSubmenuOpen = null; }, 150);
+            });
+        };
+        menu.querySelectorAll('.dropdown-option-has-sub').forEach(opt => {
+            const act = opt.dataset.action;
+            if (act === 'openTextSubmenu') bindShapeSubmenuHover(opt, openTextSubmenu);
+            else if (act === 'openShapeTypeSubmenu') bindShapeSubmenuHover(opt, openShapeTypeSubmenu);
+        });
         menu.addEventListener('click', me => {
-            const action = me.target.dataset.action;
-            if (action === 'editText') {
-                closeAllDropdowns();
-                enterTextEdit();
-            } else if (action === 'toggleBold') {
-                closeAllDropdowns();
-                recordState();
-                shape.isBold = !shape.isBold;
-                shapeText.classList.toggle('is-bold', shape.isBold);
-                debouncedSave();
-            } else if (action === 'color') {
+            const action = me.target.closest('.dropdown-option')?.dataset?.action;
+            if (action === 'openTextSubmenu' || action === 'openShapeTypeSubmenu') return;
+            else if (action === 'color') {
                 closeAllDropdowns();
                 openColorPicker();
-            } else if (action === 'type') {
-                closeAllDropdowns();
-                changeShapeType(me.target.dataset.shape);
             } else if (action === 'delete') {
                 closeAllDropdowns();
                 if (selectedWindows.size > 1 && selectedWindows.has(container)) {
@@ -3603,24 +4078,18 @@ function makeFolderDraggable(container, folder) {
     let isDragging = false;
     let startX, startY, initialLeft, initialTop;
     let actionStateCaptured = false;
+    /** 实际被拖动的 DOM（Alt+复制时为副本） */
+    let activeContainer = container;
+    let activeFolder = folder;
 
     const onMouseDown = (e) => {
         if (e.target.contentEditable === 'true') return;
         if (e.button !== 0) return;
         if (e.ctrlKey || e.shiftKey) return;
-        
-        e.preventDefault();
-        isDragging = true;
-        actionStateCaptured = false;
-        startX = e.clientX;
-        startY = e.clientY;
-        initialLeft = parseFloat(container.style.left) || 0;
-        initialTop = parseFloat(container.style.top) || 0;
-        
-        container.classList.add('dragging');
-        isWindowDragActive = true;
 
-        // 处理多选拖动
+        e.preventDefault();
+
+        // 处理多选
         if (!e.ctrlKey && !e.shiftKey && !selectedWindows.has(container)) {
             clearWindowSelection();
         }
@@ -3631,13 +4100,42 @@ function makeFolderDraggable(container, folder) {
         }
         expandSelectionByGroups();
 
+        const targets = Array.from(selectedWindows).filter(el => el && el.isConnected);
+
+        if (e.altKey) {
+            allowSameStateOnce = true;
+            recordState();
+            const dupResult = duplicateWorkspaceWindowsFromElements(targets, container);
+            if (!dupResult || !dupResult.newElements.length) {
+                return;
+            }
+            clearWindowSelection();
+            dupResult.newElements.forEach(selectWindow);
+            activeContainer = dupResult.primaryDuplicate;
+            activeFolder = getWindowDataByElement(activeContainer);
+            if (!activeFolder) return;
+        } else {
+            activeContainer = container;
+            activeFolder = folder;
+        }
+
+        isDragging = true;
+        actionStateCaptured = false;
+        startX = e.clientX;
+        startY = e.clientY;
+        initialLeft = parseFloat(activeContainer.style.left) || 0;
+        initialTop = parseFloat(activeContainer.style.top) || 0;
+
+        activeContainer.classList.add('dragging');
+        isWindowDragActive = true;
+
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
     };
 
     const onMouseMove = (e) => {
         if (!isDragging) return;
-        
+
         const dx = (e.clientX - startX) / currentZoom;
         const dy = (e.clientY - startY) / currentZoom;
 
@@ -3646,7 +4144,7 @@ function makeFolderDraggable(container, folder) {
             actionStateCaptured = true;
         }
 
-        if (selectedWindows.size > 1 && selectedWindows.has(container)) {
+        if (selectedWindows.size > 1 && selectedWindows.has(activeContainer)) {
             selectedWindows.forEach(el => {
                 const data = getWindowDataByElement(el);
                 if (data && data.position) {
@@ -3661,19 +4159,18 @@ function makeFolderDraggable(container, folder) {
                 }
             });
         } else {
-            container.style.left = `${initialLeft + dx}px`;
-            container.style.top = `${initialTop + dy}px`;
+            activeContainer.style.left = `${initialLeft + dx}px`;
+            activeContainer.style.top = `${initialTop + dy}px`;
         }
     };
 
     const onMouseUp = (e) => {
         isDragging = false;
         isWindowDragActive = false;
-        container.classList.remove('dragging');
+        activeContainer.classList.remove('dragging');
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
 
-        // 清除原始位置缓存
         selectedWindows.forEach(el => {
             delete el.dataset.origLeft;
             delete el.dataset.origTop;
@@ -3684,8 +4181,8 @@ function makeFolderDraggable(container, folder) {
             }
         });
 
-        folder.position.left = container.style.left;
-        folder.position.top = container.style.top;
+        activeFolder.position.left = activeContainer.style.left;
+        activeFolder.position.top = activeContainer.style.top;
         debouncedSave();
     };
 
@@ -4330,21 +4827,78 @@ function createNotePane(note) {
         menu.className = 'custom-dropdown-menu';
         const moveOption = workspaces.length > 1 ? `<div class="dropdown-option" data-action="move">移动到工作区...</div>` : '';
         const groupMenuHTML = buildGroupMenuHTML();
-        const folderMenuHTML = buildFolderMenuOptions(note.id, 'note');
+        const hasFolders = workspaces[currentWorkspaceIndex]?.folders && Object.keys(workspaces[currentWorkspaceIndex].folders).length > 0;
+        const folderSubmenuOption = hasFolders ? `<div class="dropdown-option dropdown-option-has-sub" data-action="openFolderSubmenu">移到文件夹 <span class="dropdown-sub-arrow">▶</span></div>` : '';
+        const openFolderSubmenuNote = () => {
+            const folderOptionsHTML = buildFolderMenuOptions(note.id, 'note').replace(/^<div class="dropdown-divider"><\/div>/, '');
+            if (!folderOptionsHTML) return;
+            const subMenu = document.createElement('div');
+            subMenu.className = 'custom-dropdown-menu';
+            subMenu.innerHTML = folderOptionsHTML;
+            document.body.appendChild(subMenu);
+            const rect = menu.getBoundingClientRect();
+            subMenu.style.top = `${rect.top + window.scrollY}px`;
+            subMenu.style.left = `${rect.right + window.scrollX + 4}px`;
+            requestAnimationFrame(() => subMenu.classList.add('visible'));
+            subMenu.addEventListener('click', sme => {
+                const opt = sme.target.closest('.dropdown-option');
+                if (!opt || opt.dataset.action !== 'addToFolder') return;
+                const folderId = opt.dataset.folderId;
+                if (folderId) {
+                    const folder = workspaces[currentWorkspaceIndex]?.folders?.[folderId];
+                    if (folder) {
+                        const existingIndex = folder.items.findIndex(item => item.id === note.id && item.type === 'note');
+                        if (existingIndex >= 0) {
+                            recordState();
+                            folder.items.splice(existingIndex, 1);
+                            delete note.folderId;
+                            updateFolderBadge(folderId);
+                            debouncedSave();
+                            showToast(`已从 "${folder.name}" 中移出`, 'success');
+                        } else {
+                            addItemToFolder(folderId, 'note', note.id);
+                            showToast(`已添加到 "${folder.name}"`, 'success');
+                        }
+                    }
+                }
+                closeAllDropdowns();
+            });
+            return subMenu;
+        };
         menu.innerHTML = `
             <div class="dropdown-option" data-action="color">更改颜色</div>
             <div class="dropdown-option" data-action="exportMarkdown">导出为 Markdown</div>
             <div class="dropdown-option" data-action="exportWord">导出为 Word(DOCX)</div>
             ${moveOption}
-            ${folderMenuHTML}
+            ${folderSubmenuOption}
             ${groupMenuHTML}
             <div class="dropdown-divider"></div>
             <div class="dropdown-option danger" data-action="delete">删除便签</div>
         `;
         positionContextMenu(menu, e);
-
+        if (hasFolders) {
+            let noteFolderSubTimer = null, noteFolderSub = null;
+            const folderOpt = menu.querySelector('[data-action="openFolderSubmenu"]');
+            if (folderOpt) {
+                folderOpt.addEventListener('mouseenter', () => {
+                    clearTimeout(noteFolderSubTimer);
+                    if (noteFolderSub) { noteFolderSub.remove(); noteFolderSub = null; }
+                    noteFolderSub = openFolderSubmenuNote();
+                    if (noteFolderSub) {
+                        noteFolderSub.addEventListener('mouseenter', () => clearTimeout(noteFolderSubTimer));
+                        noteFolderSub.addEventListener('mouseleave', () => {
+                            noteFolderSubTimer = setTimeout(() => { noteFolderSub?.remove(); noteFolderSub = null; }, 150);
+                        });
+                    }
+                });
+                folderOpt.addEventListener('mouseleave', () => {
+                    noteFolderSubTimer = setTimeout(() => { noteFolderSub?.remove(); noteFolderSub = null; }, 150);
+                });
+            }
+        }
         menu.addEventListener('click', async me => {
             const action = me.target.dataset.action;
+            if (action === 'openFolderSubmenu') return;
             closeAllDropdowns(); 
             if (action === 'rename') {
                 showCustomModal({
@@ -4383,29 +4937,6 @@ function createNotePane(note) {
                 applyGroupToSelection();
             } else if (action === 'ungroup') {
                 ungroupSelection();
-            } else if (action === 'addToFolder') {
-                const folderId = me.target.dataset.folderId;
-                if (folderId) {
-                    const currentWorkspace = workspaces[currentWorkspaceIndex];
-                    const folder = currentWorkspace.folders?.[folderId];
-                    if (folder) {
-                        // 检查是否已在文件夹中
-                        const existingIndex = folder.items.findIndex(item => item.id === note.id && item.type === 'note');
-                        if (existingIndex >= 0) {
-                            // 从文件夹中移出
-                            recordState();
-                            folder.items.splice(existingIndex, 1);
-                            delete note.folderId;
-                            updateFolderBadge(folderId);
-                            debouncedSave();
-                            showToast(`已从 "${folder.name}" 中移出`, 'success');
-                        } else {
-                            // 添加到文件夹
-                            addItemToFolder(folderId, 'note', note.id);
-                            showToast(`已添加到 "${folder.name}"`, 'success');
-                        }
-                    }
-                }
             } else if (action === 'move') {
                 const rect = menu.getBoundingClientRect();
                 const subMenu = document.createElement('div');
@@ -4513,13 +5044,23 @@ function createNotePane(note) {
         e.preventDefault();
         closeAllDropdowns();
 
+        const targetImg = e.target.closest('img');
         const selection = window.getSelection();
         const hasSelection = selection.toString().trim().length > 0;
         
         const menu = document.createElement('div');
         menu.className = 'custom-dropdown-menu';
 
-        if (hasSelection) {
+        if (targetImg) {
+            // 场景0: 右键点击了便签内的图片
+            menu.innerHTML = `
+                <div class="dropdown-option" data-action="copyImage">复制图片</div>
+                <div class="dropdown-option" data-action="downloadImage">下载图片</div>
+                <div class="dropdown-option" data-action="openImage">在新窗口打开</div>
+                <div class="dropdown-divider"></div>
+                <div class="dropdown-option danger" data-action="deleteImage">删除图片</div>
+            `;
+        } else if (hasSelection) {
             // 场景1: 选中了文字
             menu.innerHTML = `
                 <div class="dropdown-option" data-action="cut">剪切</div>
@@ -4545,6 +5086,27 @@ function createNotePane(note) {
 
             const action = actionTarget.dataset.action;
 
+            // --- 处理便签内图片的操作 ---
+            if (action === 'copyImage' && targetImg) {
+                closeAllDropdowns();
+                copyPhotoWithFeedback(targetImg.src);
+                return;
+            } else if (action === 'downloadImage' && targetImg) {
+                closeAllDropdowns();
+                downloadImage(targetImg.src, `image_${Date.now()}.png`);
+                showToast('图片已下载', 'success');
+                return;
+            } else if (action === 'openImage' && targetImg) {
+                closeAllDropdowns();
+                window.open(targetImg.src, '_blank');
+                return;
+            } else if (action === 'deleteImage' && targetImg) {
+                closeAllDropdowns();
+                targetImg.remove();
+                contentEl.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                return;
+            }
+
             // --- 处理选中文字时的操作 ---
             if (action === 'cut') {
                 document.execCommand('cut');
@@ -4560,38 +5122,83 @@ function createNotePane(note) {
             // --- 处理未选中文字时的操作 ---
             else if (action === 'paste') {
                 try {
+                    if (!navigator.clipboard || !navigator.clipboard.read) {
+                        showToast('当前环境不支持通过菜单粘贴，请使用快捷键 Ctrl+V / Cmd+V', 'warning');
+                        closeAllDropdowns();
+                        return;
+                    }
+                    const normalizeClipboardText = (text) =>
+                        (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\u00A0/g, ' ');
+                    const isLikelyExcelHtml = (html) =>
+                        /(?:excel|mso-|urn:schemas-microsoft-com:office:excel|<table[\s>]|<tr[\s>]|<td[\s>])/i.test(html || '');
+
                     const clipboardItems = await navigator.clipboard.read();
+                    let plainTextPayload = '';
+                    let htmlPayload = '';
+                    let imageBlob = null;
+
                     for (const item of clipboardItems) {
-                        if (item.types.includes('image/png') || item.types.includes('image/jpeg')) {
-                            const blob = await item.getType(item.types.find(t => t.startsWith('image/')));
-                            const reader = new FileReader();
-                            reader.onload = function(event) {
-                                const imgHTML = `<img src="${event.target.result}" style="max-width: 100%; cursor: pointer;">`;
-                                document.execCommand('insertHTML', false, imgHTML);
-                                contentEl.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-                            };
-                            reader.readAsDataURL(blob);
-                            closeAllDropdowns();
-                            return;
-                        } else if (item.types.includes('text/html')) {
-                            const blob = await item.getType('text/html');
-                            let html = await blob.text();
-                            // 清理背景色
+                        if (!plainTextPayload && item.types.includes('text/plain')) {
+                            const textBlob = await item.getType('text/plain');
+                            plainTextPayload = await textBlob.text();
+                        }
+                        if (!htmlPayload && item.types.includes('text/html')) {
+                            const htmlBlob = await item.getType('text/html');
+                            htmlPayload = await htmlBlob.text();
+                        }
+                        if (!imageBlob) {
+                            const imageType = item.types.find(t => t.startsWith('image/'));
+                            if (imageType) {
+                                imageBlob = await item.getType(imageType);
+                            }
+                        }
+                    }
+
+                    // 优先文本，尤其是 Excel（可避免被误判为图片，并保留单元格换行/制表符）
+                    if (plainTextPayload) {
+                        document.execCommand('insertText', false, normalizeClipboardText(plainTextPayload));
+                        closeAllDropdowns();
+                        return;
+                    }
+
+                    if (htmlPayload) {
+                        if (isLikelyExcelHtml(htmlPayload)) {
                             const tempDiv = document.createElement('div');
-                            tempDiv.innerHTML = html;
+                            tempDiv.innerHTML = htmlPayload;
+                            const excelText = normalizeClipboardText(tempDiv.innerText || tempDiv.textContent || '');
+                            document.execCommand('insertText', false, excelText);
+                        } else {
+                            // 非 Excel HTML：仅做轻量清理，避免引入额外换行
+                            const tempDiv = document.createElement('div');
+                            tempDiv.innerHTML = htmlPayload;
                             tempDiv.querySelectorAll('*').forEach(el => {
                                 el.style.backgroundColor = '';
                                 el.style.background = '';
                                 el.removeAttribute('bgcolor');
                             });
-                            document.execCommand('insertHTML', false, tempDiv.innerHTML);
-                            closeAllDropdowns();
-                            return;
+                            let sanitizedHtml = tempDiv.innerHTML;
+                            sanitizedHtml = sanitizedHtml.replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>').trim();
+                            document.execCommand('insertHTML', false, sanitizedHtml);
                         }
+                        closeAllDropdowns();
+                        return;
                     }
-                    // 如果上面都失败了，作为纯文本回退
+
+                    if (imageBlob) {
+                        const reader = new FileReader();
+                        reader.onload = function(event) {
+                            const imgHTML = `<img src="${event.target.result}" style="max-width: 100%; cursor: pointer;">`;
+                            document.execCommand('insertHTML', false, imgHTML);
+                            contentEl.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                        };
+                        reader.readAsDataURL(imageBlob);
+                        closeAllDropdowns();
+                        return;
+                    }
+
+                    // 如果上面都失败了，作为最终纯文本回退
                     const text = await navigator.clipboard.readText();
-                    document.execCommand('insertText', false, text);
+                    document.execCommand('insertText', false, normalizeClipboardText(text));
                 } catch (err) {
                     showToast('粘贴内容失败，可能需要授权。', 'error');
                     console.error('Paste error:', err);
@@ -4599,6 +5206,11 @@ function createNotePane(note) {
                 closeAllDropdowns();
             } else if (action === 'pasteText') {
                 try {
+                    if (!navigator.clipboard || !navigator.clipboard.readText) {
+                        showToast('当前环境不支持通过菜单粘贴，请使用快捷键 Ctrl+V / Cmd+V', 'warning');
+                        closeAllDropdowns();
+                        return;
+                    }
                     const text = await navigator.clipboard.readText();
                     document.execCommand('insertText', false, text);
                 } catch (err) {
@@ -4615,24 +5227,57 @@ function createNotePane(note) {
         e.preventDefault();
         const clipboardData = e.clipboardData || window.clipboardData;
         const items = clipboardData.items;
+        const normalizeClipboardText = (text) =>
+            (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\u00A0/g, ' ');
+        const isLikelyExcelHtml = (html) =>
+            /(?:excel|mso-|urn:schemas-microsoft-com:office:excel|<table[\s>]|<tr[\s>]|<td[\s>])/i.test(html || '');
 
-        for (let i = 0; i < items.length; i++) {
-            if (items[i].type.indexOf('image') !== -1) {
-                const file = items[i].getAsFile();
-                if (file) {
-                    const reader = new FileReader();
-                    reader.onload = function(event) {
-                        const imgHTML = `<img src="${event.target.result}" style="max-width: 100%; cursor: pointer;">`;
-                        document.execCommand('insertHTML', false, imgHTML);
-                        contentEl.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-                    };
-                    reader.readAsDataURL(file);
-                    return;
+        // 如果剪贴板中同时包含 HTML/文本 和 图片（例如从 Excel 复制），优先使用文本/HTML
+        const hasHtmlOrText = clipboardData.types.includes('text/html') || clipboardData.types.includes('text/plain');
+        
+        // 只有在没有文本/HTML，或者明确是纯图片复制时，才作为图片处理
+        let isPureImage = false;
+        if (clipboardData.types.length === 1 && clipboardData.types[0] === 'Files') {
+            isPureImage = true;
+        } else if (clipboardData.types.includes('image/png') || clipboardData.types.includes('image/jpeg')) {
+            if (!hasHtmlOrText) {
+                isPureImage = true;
+            }
+        }
+
+        if (isPureImage) {
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image') !== -1) {
+                    const file = items[i].getAsFile();
+                    if (file) {
+                        const reader = new FileReader();
+                        reader.onload = function(event) {
+                            const imgHTML = `<img src="${event.target.result}" style="max-width: 100%; cursor: pointer;">`;
+                            document.execCommand('insertHTML', false, imgHTML);
+                            contentEl.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                        };
+                        reader.readAsDataURL(file);
+                        return;
+                    }
                 }
             }
         }
 
+        const pastedText = normalizeClipboardText(clipboardData.getData('text/plain'));
         const pastedHtml = clipboardData.getData('text/html');
+        const fromExcel = isLikelyExcelHtml(pastedHtml);
+
+        // Excel/表格场景优先纯文本，可保留单元格内换行与行列结构（\n 与 \t）
+        if (pastedText && (fromExcel || !pastedHtml)) {
+            document.execCommand('insertText', false, pastedText);
+            logUiEvent('note_paste', {
+                hasHtml: Boolean(pastedHtml),
+                htmlLikelyExcel: fromExcel,
+                textLength: pastedText.length
+            });
+            return;
+        }
+
         if (pastedHtml) {
             const tempDiv = document.createElement('div');
             tempDiv.innerHTML = pastedHtml;
@@ -4654,29 +5299,12 @@ function createNotePane(note) {
                 el.style.maxWidth = '';
                 el.removeAttribute('bgcolor');
             });
-            
-            // 2. 将块级元素转换为 span，避免产生额外换行
-            const blockTags = ['div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'td', 'th'];
-            blockTags.forEach(tag => {
-                const elements = tempDiv.getElementsByTagName(tag);
-                while (elements.length > 0) {
-                    const el = elements[0];
-                    const span = document.createElement('span');
-                    // 保留内部内容和行内样式
-                    span.innerHTML = el.innerHTML;
-                    span.style.cssText = el.style.cssText;
-                    // 保留 class 属性（如果有）
-                    if (el.className) span.className = el.className;
-                    // 替换元素
-                    el.parentNode.replaceChild(span, el);
-                }
-            });
-            
-            // 3. 处理 <br> 标签，移除连续的多余 <br>
+
+            // 2. 处理 <br> 标签，移除连续的多余 <br>
             let sanitizedHtml = tempDiv.innerHTML;
             sanitizedHtml = sanitizedHtml.replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>');
             
-            // 4. 清理首尾空白
+            // 3. 清理首尾空白
             const finalDiv = document.createElement('div');
             finalDiv.innerHTML = sanitizedHtml;
             sanitizedHtml = finalDiv.innerHTML.trim();
@@ -4688,7 +5316,6 @@ function createNotePane(note) {
                 inlineWrapStyle: hasInlineNoWrap
             });
         } else {
-            const pastedText = clipboardData.getData('text/plain');
             document.execCommand('insertText', false, pastedText);
             logUiEvent('note_paste', {
                 hasHtml: false,
@@ -4757,6 +5384,8 @@ function createProjectPane(project, workspace) {
     // +++ END: 兼容旧数据 +++
     
     let currentFilter = project.activeFilter || 'all';
+    /** 由 setupFiltersAndCategories 赋值为 handleFilterClick，供项目主体空白右键菜单切换筛选 */
+    let applyProjectFilter = null;
     project.activeFilter ??= 'all'; project.categories ??= []; project.todos ??= [];
     container.dataset.projectId = project.id;
     projectNameEl.textContent = project.name;
@@ -4962,15 +5591,70 @@ function createProjectPane(project, workspace) {
             menu.className = 'custom-dropdown-menu';
             const moveOption = workspaces.length > 1 ? `<div class="dropdown-option" data-action="move">移动到工作区...</div>` : '';
             const groupMenuHTML = buildGroupMenuHTML();
-            const folderMenuHTML = buildFolderMenuOptions(project.id, 'project');
-
-            menu.innerHTML = `<div class="dropdown-option" data-action="rename">重命名</div><div class="dropdown-option" data-action="color">更改颜色</div>${moveOption}${folderMenuHTML}${groupMenuHTML}<div class="dropdown-divider"></div><div class="dropdown-option danger" data-action="delete">删除项目</div>`;
+            const hasFoldersProj = workspace.folders && Object.keys(workspace.folders).length > 0;
+            const folderSubmenuOptionProj = hasFoldersProj ? `<div class="dropdown-option dropdown-option-has-sub" data-action="openFolderSubmenu">移到文件夹 <span class="dropdown-sub-arrow">▶</span></div>` : '';
+            const openFolderSubmenuProject = () => {
+                const folderOptionsHTML = buildFolderMenuOptions(project.id, 'project').replace(/^<div class="dropdown-divider"><\/div>/, '');
+                if (!folderOptionsHTML) return;
+                const subMenu = document.createElement('div');
+                subMenu.className = 'custom-dropdown-menu';
+                subMenu.innerHTML = folderOptionsHTML;
+                document.body.appendChild(subMenu);
+                const rect = menu.getBoundingClientRect();
+                subMenu.style.top = `${rect.top + window.scrollY}px`;
+                subMenu.style.left = `${rect.right + window.scrollX + 4}px`;
+                requestAnimationFrame(() => subMenu.classList.add('visible'));
+                subMenu.addEventListener('click', sme => {
+                    const opt = sme.target.closest('.dropdown-option');
+                    if (!opt || opt.dataset.action !== 'addToFolder') return;
+                    const folderId = opt.dataset.folderId;
+                    if (folderId) {
+                        const folder = workspace.folders?.[folderId];
+                        if (folder) {
+                            const existingIndex = folder.items.findIndex(item => item.id === project.id && item.type === 'project');
+                            if (existingIndex >= 0) {
+                                recordState();
+                                folder.items.splice(existingIndex, 1);
+                                delete project.folderId;
+                                updateFolderBadge(folderId);
+                                debouncedSave();
+                                showToast(`已从 "${folder.name}" 中移出`, 'success');
+                            } else {
+                                addItemToFolder(folderId, 'project', project.id);
+                                showToast(`已添加到 "${folder.name}"`, 'success');
+                            }
+                        }
+                    }
+                    closeAllDropdowns();
+                });
+                return subMenu;
+            };
+            menu.innerHTML = `<div class="dropdown-option" data-action="rename">重命名</div><div class="dropdown-option" data-action="color">更改颜色</div>${moveOption}${folderSubmenuOptionProj}${groupMenuHTML}<div class="dropdown-divider"></div><div class="dropdown-option danger" data-action="delete">删除项目</div>`;
             
             positionContextMenu(menu, e);
-            
+            if (hasFoldersProj) {
+                let projFolderSubTimer = null, projFolderSub = null;
+                const folderOpt = menu.querySelector('[data-action="openFolderSubmenu"]');
+                if (folderOpt) {
+                    folderOpt.addEventListener('mouseenter', () => {
+                        clearTimeout(projFolderSubTimer);
+                        if (projFolderSub) { projFolderSub.remove(); projFolderSub = null; }
+                        projFolderSub = openFolderSubmenuProject();
+                        if (projFolderSub) {
+                            projFolderSub.addEventListener('mouseenter', () => clearTimeout(projFolderSubTimer));
+                            projFolderSub.addEventListener('mouseleave', () => {
+                                projFolderSubTimer = setTimeout(() => { projFolderSub?.remove(); projFolderSub = null; }, 150);
+                            });
+                        }
+                    });
+                    folderOpt.addEventListener('mouseleave', () => {
+                        projFolderSubTimer = setTimeout(() => { projFolderSub?.remove(); projFolderSub = null; }, 150);
+                    });
+                }
+            }
             menu.addEventListener('click', me => {
                 const action = me.target.dataset.action;
-                
+                if (action === 'openFolderSubmenu') return;
                 if (action === 'rename') {
                     closeAllDropdowns();
                     enterProjectNameEditMode();
@@ -5038,27 +5722,6 @@ function createProjectPane(project, workspace) {
                 } else if (action === 'delete') {
                     closeAllDropdowns();
                     deleteProjectBtn.click();
-                } else if (action === 'addToFolder') {
-                    closeAllDropdowns();
-                    const folderId = me.target.dataset.folderId;
-                    if (folderId) {
-                        const currentWorkspace = workspaces[currentWorkspaceIndex];
-                        const folder = currentWorkspace.folders?.[folderId];
-                        if (folder) {
-                            const existingIndex = folder.items.findIndex(item => item.id === project.id && item.type === 'project');
-                            if (existingIndex >= 0) {
-                                recordState();
-                                folder.items.splice(existingIndex, 1);
-                                delete project.folderId;
-                                updateFolderBadge(folderId);
-                                debouncedSave();
-                                showToast(`已从 "${folder.name}" 中移出`, 'success');
-                            } else {
-                                addItemToFolder(folderId, 'project', project.id);
-                                showToast(`已添加到 "${folder.name}"`, 'success');
-                            }
-                        }
-                    }
                 } else if (action === 'group') {
                     closeAllDropdowns();
                     applyGroupToSelection();
@@ -5202,18 +5865,33 @@ function createProjectPane(project, workspace) {
         const handleFilterClick = (filterId) => {
             currentFilter = filterId;
             project.activeFilter = currentFilter;
-            // 不保存，因为这只是UI状态，不应触发undo
+            // 不保存，因为这只是 UI 状态，不应触发 undo
             // debouncedSave(); 
             setActiveFilterButton();
             renderTodos();
         };
+        applyProjectFilter = handleFilterClick;
+
+        todoInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.shiftKey) {
+                e.preventDefault();
+                const start = todoInput.selectionStart;
+                const end = todoInput.selectionEnd;
+                const value = todoInput.value;
+                todoInput.value = value.substring(0, start) + '\n' + value.substring(end);
+                todoInput.selectionStart = todoInput.selectionEnd = start + 1;
+            } else if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                addForm.dispatchEvent(new Event('submit'));
+            }
+        });
 
         addForm.addEventListener('submit', e => {
             e.preventDefault();
             const text = todoInput.value.trim();
             if (text) {
                 recordState();
-                const newTodo = { id: Date.now(), text, textHtml: escapeHTML(text), completed: false, isImportant: false, isPriority: false, categoryId: currentFilter.startsWith('cat_') ? currentFilter : null, subtasks: [], textBold: false, textColor: null, planTime: null, remindTime: null, remindAt: null, remindNotified: false };
+                const newTodo = { id: Date.now(), text, textHtml: escapeHTML(text).replace(/\n/g, '<br>'), completed: false, isImportant: false, isPriority: false, categoryId: currentFilter.startsWith('cat_') ? currentFilter : null, subtasks: [], textBold: false, textColor: null, planTime: null, remindTime: null, remindAt: null, remindNotified: false };
                 project.todos.push(newTodo);
                 debouncedSave();
                 renderTodos();
@@ -5360,6 +6038,48 @@ function createProjectPane(project, workspace) {
                 textarea.addEventListener('blur', exitEditMode, { once: true });
                 textarea.addEventListener('keydown', handleKeydown);
                 textarea.addEventListener('input', autoResize);
+            }
+        };
+
+        const todoInput = container.querySelector('.todo-input');
+        const addCategoryBtn = container.querySelector('.add-category-btn');
+
+        /** 与双击任务列表空白处相同：插入一条新任务并进入行内编辑 */
+        const startInlineNewTodo = () => {
+            recordState();
+            const newTodo = {
+                id: Date.now(),
+                text: '',
+                textHtml: '',
+                completed: false,
+                isImportant: false,
+                isPriority: false,
+                categoryId: currentFilter.startsWith('cat_') ? currentFilter : null,
+                subtasks: [],
+                textBold: false,
+                textColor: null,
+                planTime: null,
+                remindTime: null,
+                remindAt: null,
+                remindNotified: false
+            };
+            project.todos.push(newTodo);
+            renderTodos();
+            const newItemElement = todoList.querySelector(`.todo-item[data-id="${newTodo.id}"]`);
+            if (newItemElement) {
+                const newTextSpan = newItemElement.querySelector('.text');
+                if (newTextSpan) {
+                    enterEditMode(newTextSpan, newTodo.text, (newText) => {
+                        if (newText) {
+                            recordState();
+                            newTodo.text = newText;
+                            debouncedSave();
+                        } else {
+                            project.todos = project.todos.filter(t => t.id != newTodo.id);
+                            renderTodos();
+                        }
+                    });
+                }
             }
         };
 
@@ -5732,51 +6452,61 @@ function createProjectPane(project, workspace) {
 
             // --- 场景2: 双击了任务列表的空白区域 (优化版) ---
             if (!item) {
-                recordState();
-                
-                const newTodo = { 
-                    id: Date.now(), 
-                    // +++ 关键改动 1: 初始文本为空 +++
-                    text: '',
-                    textHtml: '',
-                    completed: false, 
-                    isImportant: false, 
-                    isPriority: false,
-                    categoryId: currentFilter.startsWith('cat_') ? currentFilter : null, 
-                    subtasks: [],
-                    textBold: false,
-                    textColor: null,
-                    planTime: null,
-                    remindTime: null,
-                    remindAt: null,
-                    remindNotified: false
-                };
-                
-                project.todos.push(newTodo);
-                // 注意：这里我们先不保存，等待用户输入
-                
-                renderTodos();
-
-                const newItemElement = todoList.querySelector(`.todo-item[data-id="${newTodo.id}"]`);
-                if (newItemElement) {
-                    const newTextSpan = newItemElement.querySelector('.text');
-                    if (newTextSpan) {
-                        enterEditMode(newTextSpan, newTodo.text, (newText) => {
-                            // +++ 关键改动 2: 只有在有有效文本时才保存 +++
-                            if (newText) { // newText 是 trim() 后的结果，所以空格会被视为空
-                                recordState();
-                                newTodo.text = newText;
-                                debouncedSave(); // 此时才真正保存
-                            } else {
-                                // 如果没有有效文本，则从数组中移除这个临时任务
-                                project.todos = project.todos.filter(t => t.id != newTodo.id);
-                                // 不需要保存，因为它从未被有效创建过
-                                renderTodos(); // 重新渲染以移除界面上的空任务
-                            }
-                        });
-                    }
-                }
+                startInlineNewTodo();
             }
+        });
+
+        const projectBody = container.querySelector('.project-body');
+        projectBody.addEventListener('contextmenu', (e) => {
+            if (e.target.closest('.todo-item, .sub-task-item')) return;
+            if (e.target.closest('.project-header')) return;
+            if (e.target.closest('input, textarea, button, select')) return;
+            if (e.target.closest('[contenteditable="true"]')) return;
+            if (e.target.closest('.filter-btn, .category-btn, .add-category-btn')) return;
+            if (e.target.closest('.resizer')) return;
+
+            e.preventDefault();
+            closeAllDropdowns();
+            const menu = document.createElement('div');
+            menu.className = 'custom-dropdown-menu';
+            menu.innerHTML = `
+                <div class="dropdown-option" data-action="new-task-inline">新建任务</div>
+                <div class="dropdown-option" data-action="focus-input">在底部输入框添加...</div>
+                <div class="dropdown-option" data-action="new-category">新建子项目...</div>
+                <div class="dropdown-divider"></div>
+                <div class="dropdown-option" data-action="filter-all">筛选：全部</div>
+                <div class="dropdown-option" data-action="filter-active">筛选：待办</div>
+                <div class="dropdown-option" data-action="filter-completed">筛选：已完成</div>
+            `;
+            positionContextMenu(menu, e);
+            menu.addEventListener('click', async (me) => {
+                const action = me.target.closest('.dropdown-option')?.dataset?.action;
+                if (!action) return;
+                closeAllDropdowns();
+                switch (action) {
+                    case 'new-task-inline':
+                        startInlineNewTodo();
+                        break;
+                    case 'focus-input':
+                        todoInput.focus();
+                        break;
+                    case 'new-category':
+                        addCategoryBtn.click();
+                        break;
+                    case 'filter-all':
+                        applyProjectFilter?.('all');
+                        break;
+                    case 'filter-active':
+                        applyProjectFilter?.('active');
+                        break;
+                    case 'filter-completed':
+                        applyProjectFilter?.('completed');
+                        break;
+                    default:
+                        break;
+                }
+            });
+            menu.addEventListener('contextmenu', (ce) => { ce.preventDefault(); });
         });
     };
     
@@ -6522,6 +7252,9 @@ function renderCurrentWorkspace() {
     if (Object.keys(currentWorkspace.shapes).length || Object.keys(currentWorkspace.emojis).length || Object.keys(currentWorkspace.photos).length) {
         normalizeLayerAll();
     }
+    if (highestZIndex >= FOLDER_Z_INDEX_BASE) {
+        normalizeProjectNoteZIndex();
+    }
     checkEmptyState(currentWorkspace);
 }
 
@@ -7255,14 +7988,29 @@ function setupGlobalListeners() {
 
         if (ctrlKey && e.key.toLowerCase() === 'c') {
             e.preventDefault();
+            const selected = Array.from(selectedWindows).filter(el => el && el.isConnected);
+            const photosOnly = selected.length > 0 && selected.every(el => el.classList.contains('photo-container'));
+            if (photosOnly) {
+                const firstEl = selected[0];
+                const data = getWindowDataByElement(firstEl);
+                const src = (data && data.src) || firstEl.querySelector('.photo-body')?.src;
+                if (src) {
+                    copyPhotoWithFeedback(src, { multiFirst: selected.length > 1 });
+                } else {
+                    showToast('无法读取图片', 'error');
+                }
+                return;
+            }
             copySelectedWindows();
             return;
         }
         if (ctrlKey && e.key.toLowerCase() === 'v') {
             pasteHandled = false;
             setTimeout(() => {
-                if (!pasteHandled && windowClipboard && windowClipboard.length > 0) {
+                if (!pasteHandled && lastWorkspaceCopyKind === 'windows' && windowClipboard && windowClipboard.length > 0) {
                     pasteClipboardWindows();
+                    lastWorkspaceCopyKind = 'none';
+                    pasteHandled = true;
                 }
             }, 60);
             return;
@@ -7409,6 +8157,14 @@ function setupGlobalListeners() {
         if (e.target.closest('.note-content') || e.target.closest('input, textarea, [contenteditable="true"]')) {
             return;
         }
+        // 刚用 Ctrl+C 复制的是窗口（表情/便签等）时，优先粘贴内部窗口，否则系统剪贴板里可能仍是旧图片
+        if (lastWorkspaceCopyKind === 'windows' && windowClipboard && windowClipboard.length > 0) {
+            e.preventDefault();
+            pasteHandled = true;
+            pasteClipboardWindows();
+            lastWorkspaceCopyKind = 'none';
+            return;
+        }
         const items = Array.from(e.clipboardData?.items || []);
         const imageItems = items.filter(item => item.type && item.type.startsWith('image/'));
         if (imageItems.length > 0) {
@@ -7455,15 +8211,47 @@ function setupGlobalListeners() {
             : '显示全部控件';
         const themeToggleText = getEffectiveTheme() === 'dark' ? '切换到浅色模式' : '切换到深色模式';
 
-        const shapeOption = appSettings.shapesEnabled ? `<div class="dropdown-option" data-action="newShape">创建新形状 (Alt+${appSettings.shortcutMap.shape.toUpperCase()})</div>` : '';
-        const emojiOption = appSettings.emojisEnabled ? `<div class="dropdown-option" data-action="newEmoji">创建表情 (Alt+${appSettings.shortcutMap.emoji.toUpperCase()})</div>` : '';
-        menu.innerHTML = `
+        const newSubmenuOptions = `
             <div class="dropdown-option" data-action="newProject">创建新项目 (Alt+${appSettings.shortcutMap.project.toUpperCase()})</div>
             <div class="dropdown-option" data-action="newNote">创建新便签 (Alt+${appSettings.shortcutMap.note.toUpperCase()})</div>
             <div class="dropdown-option" data-action="newFolder">创建文件夹 (Alt+F)</div>
             <div class="dropdown-option" data-action="newPhoto">添加图片</div>
-            ${shapeOption}
-            ${emojiOption}
+            ${appSettings.shapesEnabled ? `<div class="dropdown-option" data-action="newShape">创建新形状 (Alt+${appSettings.shortcutMap.shape.toUpperCase()})</div>` : ''}
+            ${appSettings.emojisEnabled ? `<div class="dropdown-option" data-action="newEmoji">创建表情 (Alt+${appSettings.shortcutMap.emoji.toUpperCase()})</div>` : ''}
+        `;
+        const openNewSubmenu = () => {
+            const subMenu = document.createElement('div');
+            subMenu.className = 'custom-dropdown-menu';
+            subMenu.innerHTML = newSubmenuOptions;
+            document.body.appendChild(subMenu);
+            const rect = menu.getBoundingClientRect();
+            subMenu.style.top = `${rect.top + window.scrollY}px`;
+            subMenu.style.left = `${rect.right + window.scrollX + 4}px`;
+            requestAnimationFrame(() => subMenu.classList.add('visible'));
+            subMenu.addEventListener('click', sme => {
+                const subAction = sme.target.closest('.dropdown-option')?.dataset?.action;
+                if (!subAction) return;
+                closeAllDropdowns();
+                switch (subAction) {
+                    case 'newProject': addProjectBtn.click(); break;
+                    case 'newNote': addNoteBtn.click(); break;
+                    case 'newFolder': addFolderBtn.click(); break;
+                    case 'newShape':
+                        showShapeTypeMenu(e, (type) => createShapeAt(type, { x: e.pageX, y: e.pageY }));
+                        break;
+                    case 'newEmoji':
+                        showEmojiMenu(e, (emoji) => createEmojiAt(emoji, { x: e.pageX, y: e.pageY }));
+                        break;
+                    case 'newPhoto':
+                        lastPhotoMenuPoint = { x: e.pageX, y: e.pageY };
+                        addPhotoInput?.click();
+                        break;
+                }
+            });
+            return subMenu;
+        };
+        menu.innerHTML = `
+            <div class="dropdown-option dropdown-option-has-sub" data-action="openNewSubmenu">新建 <span class="dropdown-sub-arrow">▶</span></div>
             <div class="dropdown-divider"></div>
             <div class="dropdown-option" data-action="refresh">刷新页面 (F5)</div>
             <div class="dropdown-divider"></div>
@@ -7475,25 +8263,29 @@ function setupGlobalListeners() {
             <div class="dropdown-option" data-action="undo" ${undoDisabled}>撤销 (Ctrl+Z)</div>
         `;
         positionContextMenu(menu, e);
-
+        let newSubmenuTimer = null, newSubmenuOpen = null;
+        const newOpt = menu.querySelector('[data-action="openNewSubmenu"]');
+        if (newOpt) {
+            newOpt.addEventListener('mouseenter', () => {
+                clearTimeout(newSubmenuTimer);
+                if (newSubmenuOpen) { newSubmenuOpen.remove(); newSubmenuOpen = null; }
+                newSubmenuOpen = openNewSubmenu();
+                if (newSubmenuOpen) {
+                    newSubmenuOpen.addEventListener('mouseenter', () => clearTimeout(newSubmenuTimer));
+                    newSubmenuOpen.addEventListener('mouseleave', () => {
+                        newSubmenuTimer = setTimeout(() => { newSubmenuOpen?.remove(); newSubmenuOpen = null; }, 150);
+                    });
+                }
+            });
+            newOpt.addEventListener('mouseleave', () => {
+                newSubmenuTimer = setTimeout(() => { newSubmenuOpen?.remove(); newSubmenuOpen = null; }, 150);
+            });
+        }
         menu.addEventListener('click', me => {
-            const action = me.target.dataset.action;
+            const action = me.target.closest('.dropdown-option')?.dataset?.action;
+            if (action === 'openNewSubmenu') return;
             closeAllDropdowns();
-
             switch (action) {
-                case 'newProject': addProjectBtn.click(); break;
-                case 'newNote': addNoteBtn.click(); break;
-                case 'newFolder': addFolderBtn.click(); break;
-                case 'newShape':
-                    showShapeTypeMenu(e, (type) => createShapeAt(type, { x: e.pageX, y: e.pageY }));
-                    break;
-                case 'newEmoji':
-                    showEmojiMenu(e, (emoji) => createEmojiAt(emoji, { x: e.pageX, y: e.pageY }));
-                    break;
-                case 'newPhoto':
-                    lastPhotoMenuPoint = { x: e.pageX, y: e.pageY };
-                    addPhotoInput?.click();
-                    break;
                 case 'refresh':
                     window.location.reload();
                     break;
@@ -7948,19 +8740,10 @@ function setupGlobalListeners() {
             }
         }
     }
-    document.addEventListener('copy', async (e) => {
+    document.addEventListener('copy', (e) => {
         if (currentResizableImage) {
             e.preventDefault();
-    
-            try {
-                const dataUrl = currentResizableImage.src;
-                const blob = dataURLtoBlob(dataUrl);
-                const item = new ClipboardItem({ [blob.type]: blob });
-                await navigator.clipboard.write([item]);
-                console.log('图片已成功复制到剪贴板！');
-            } catch (err) {
-                console.error('使用 Clipboard API 复制图片失败:', err);
-            }
+            copyPhotoWithFeedback(currentResizableImage.src);
         }
     });
 

@@ -3,8 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TODO清单</title>
-    {# 根据模式决定CSS路径 #}
+    <title>TODO 清单</title>
+    {# 添加 favicon 图标 #}
+    {% if mode == 'SERVER' %}
+    <link rel="icon" href="{{ url_for('static', filename='icon.ico') }}" type="image/x-icon">
+    {% else %}
+    <link rel="icon" href="static/icon.ico" type="image/x-icon">
+    {% endif %}
+    {# 根据模式决定 CSS 路径 #}
     {% if mode == 'SERVER' %}
     <link rel="stylesheet" href="{{ url_for('static', filename='material-icons/material-symbols-rounded.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
